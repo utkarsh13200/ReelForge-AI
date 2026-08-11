@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PlanTier {
+  FREE
+  STUDIO
+  PRO
+}
+
+enum InputMode {
+  TOPIC
+  SCRIPT
+  ORIGINAL_VIDEO
+}
+
+enum ContentOrigin {
+  AI_FROM_USER_PROMPT
+  USER_AUTHORED_SCRIPT
+  USER_OWNED_VIDEO
+}
+
+enum ProjectStatus {
+  DRAFT
+  IN_PROGRESS
+  REVIEW
+  READY
+  ARCHIVED
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  AUDIO
+  THUMBNAIL
+}
+
+enum ComplianceStatus {
+  PENDING
+  NEEDS_REVIEW
+  CLEAR
+}
+
+enum RenderType {
+  LONG_FORM
+  SHORT
+  LANGUAGE_BUNDLE
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+model User {
+  id          String       @id @default(cuid())
+  email       String       @unique
+  plan        PlanTier    @default(FREE)
+  credits     Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  projects    Project[]
+  usageEvents UsageEvent[]
+}
+
+model Project {
+  id            String             @id @default(cuid())
+  userId        String
+  title         String
+  inputMode     InputMode
+  contentOrigin ContentOrigin
+  status        ProjectStatus      @default(DRAFT)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scripts       Script[]
+  mediaAssets   MediaAsset[]
+  voiceovers    Voiceover[]
+  thumbnails    Thumbnail[]
+  reports       ComplianceReport[]
+  renderJobs    RenderJob[]
+  usageEvents   UsageEvent[]
+}
+
+model Script {
+  id        String   @id @default(cuid())
+  projectId String
+  content   String
+  version   Int
+  language  String   @default("en-US")
+  tone      String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scenes    Scene[]
+
+  @@unique([projectId, version, language])
+  @@index([projectId, createdAt])
+}
+
+model Scene {
+  id            String       @id @default(cuid())
+  scriptId      String
+  order         Int
+  text          String
+  visualPrompt  String
+  mediaAssetId  String?
+  script        Script       @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  mediaAsset    MediaAsset?  @relation("FeaturedAsset", fields: [mediaAssetId], references: [id])
+  generated     MediaAsset[] @relation("SceneAssets")
+  voiceovers    Voiceover[]
+
+  @@unique([scriptId, order])
+}
+
+model MediaAsset {
+  id          String   @id @default(cuid())
+  projectId   String
+  type        MediaType
+  url         String
+  provider    String
+  promptUsed  String?
+  sceneId     String?
+  createdAt   DateTime @default(now())
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scene       Scene?   @relation("SceneAssets", fields: [sceneId], references: [id])
+  featuredIn  Scene[]  @relation("FeaturedAsset")
+
+  @@index([projectId, type])
+  @@index([sceneId])
+}
+
+model Voiceover {
+  id        String   @id @default(cuid())
+  projectId String
+  sceneId   String?
+  language  String
+  voiceId   String
+  audioUrl  String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  scene     Scene?   @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, language])
+}
+
+model Thumbnail {
+  id           String   @id @default(cuid())
+  projectId    String
+  imageUrl     String
+  titleText    String
+  variantLabel String
+  createdAt    DateTime @default(now())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model ComplianceReport {
+  id            String           @id @default(cuid())
+  projectId     String
+  status        ComplianceStatus @default(PENDING)
+  flaggedIssues Json
+  resolvedAt    DateTime?
+  createdAt     DateTime         @default(now())
+  project       Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+model RenderJob {
+  id         String    @id @default(cuid())
+  projectId  String
+  type       RenderType
+  status     JobStatus @default(QUEUED)
+  outputUrl  String?
+  progress   Int       @default(0)
+  error      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+}
+
+model UsageEvent {
+  id         String   @id @default(cuid())
+  userId     String
+  projectId  String?
+  provider   String
+  operation  String
+  credits    Int
+  estimatedCents Int
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}

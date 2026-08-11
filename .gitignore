@@ -1,0 +1,14 @@
+# Dependencies and generated output
+node_modules/
+.next/
+.pnpm-store/
+
+# Local secrets and environment overrides
+.env
+.env.local
+.env.*.local
+
+# Logs and editor files
+*.log
+.DS_Store
+Thumbs.db
