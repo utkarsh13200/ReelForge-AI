@@ -1,0 +1,41 @@
+---
+description: Keep the Visuals pipeline fast, script-matched, and persistent across modules.
+alwaysApply: true
+---
+
+# Visuals pipeline (do not regress)
+
+Module 02 must keep producing a complete silent script-length video quickly, with multiple images that follow the **current** narration — including a newly pasted script.
+
+## Script-matched images (highest priority)
+
+- Every Generate / Split request must persist the **textarea script** and split that exact text. Do not generate from a stale `projects.script`.
+- Split by **sentences**, not one image for the whole script. Use **7–8 scenes** (minimum 7 for Image, Motion, and Video).
+- Each scene prompt/beat must come from that portion of the script.
+- Generate stills from the **scene prompt** (public `image.pollinations.ai`). **Do not** use Wikimedia stock first — stock photos do not follow a new script.
+- Wikimedia is **last resort** only if AI returns nothing.
+- Do not wait on `gen.pollinations.ai` (returns HTTP 402 / no Pollen balance on this project).
+- Do not reintroduce Picsum or random unrelated fallback images as the primary source.
+
+## Speed
+
+- Fetch stills **one at a time** from public `image.pollinations.ai` (max 1 queued request per IP) when it is used as backup. Do not fire parallel Pollinations calls and do not pass `model=flux` on the public endpoint.
+- Hugging Face FLUX stills (Together router) may run **in parallel**. Skip Replicate/Fal immediately on 402/403. Do not wait on Replicate on the Image/Motion hot path.
+- Encode a **short** Ken Burns/still clip (image ~2.5s, motion ~3.5s) at 960×540 / 8fps, then **stream-loop** with `-c copy` to fill script length. Never zoompan the full narration duration.
+- Cap ffmpeg concurrency (~4). Generate/Split process the job on POST (`maxDuration` 300). GET polls must not re-enter a running visual assemble.
+- Generate-from-script is a **single job** (`fromScript: true`) that splits then assembles.
+- Show a countdown in the Visuals UI while generating.
+
+## Persistence
+
+- Never clear `projects.visual_video_url` until a **new** video has been uploaded successfully.
+- Keep previous video visible while a new one generates.
+- Do not overwrite an unsaved Visuals textarea paste when reloading assets.
+- Scene stills and the assembled MP4 stay on the project so Voice, Edit, Thumbnail, and Export keep working after the user moves to other modules.
+
+## Optional providers
+
+- Image stills: Gemini (only when the key has image quota) → Hugging Face → Pollinations → Wikimedia. Skip Replicate on the hot path (HTTP 402). Skip a provider that is unset or errors; never fail the job if a later provider works. Free-tier Gemini keys often report limit 0 — skip immediately.
+- Video clips: Fal.ai Hunyuan → Replicate → Hugging Face → ComfyUI → JSON2Video → Remotion → ffmpeg Ken Burns. Video mode must not hard-fail when `FAL_KEY` is missing.
+- ComfyUI: only when `COMFYUI_BASE_URL` is set.
+- Image and Motion must keep working without Replicate, Hugging Face, JSON2Video, or Fal keys.

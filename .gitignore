@@ -8,7 +8,11 @@ node_modules/
 .env.local
 .env.*.local
 
+# Local diagnostic output
+scripts/video-check/
+
 # Logs and editor files
 *.log
+.cursor/dev-server.pid
 .DS_Store
 Thumbs.db

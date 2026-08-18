@@ -22,5 +22,5 @@ export const providerConfig = {
   script: process.env.SCRIPT_PROVIDER ?? "openai",
   image: process.env.IMAGE_PROVIDER ?? "openai-images",
   video: process.env.VIDEO_PROVIDER ?? "replicate",
-  tts: process.env.TTS_PROVIDER ?? "elevenlabs",
+  tts: process.env.TTS_PROVIDER ?? "edge-tts",
 };
