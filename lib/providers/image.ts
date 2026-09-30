@@ -1,5 +1,6 @@
 import { fetchStockImage } from "@/lib/providers/stock-image";
-import { fetchHuggingFaceImage } from "@/lib/providers/huggingface";
+import { fetchHuggingFaceImage, isHuggingFaceConfigured } from "@/lib/providers/huggingface";
+import { isProviderOpen } from "@/lib/providers/circuit";
 import {
   fetchGeminiImage,
   getGeminiImageConfig,
@@ -20,11 +21,24 @@ export type GeneratedImage = {
   provider: ImageProvider;
 };
 
+/** All production scenes must use script-matched AI stills before stock fallback. */
+export const MIN_SCRIPT_MATCHED_AI_SCENES = 5;
+
 /** Public Pollinations stills; keep short so a stuck queue cannot freeze the job. */
-export const IMAGE_FETCH_TIMEOUT_MS = Number(process.env.IMAGE_FETCH_TIMEOUT_MS) || 5_000;
+export const IMAGE_FETCH_TIMEOUT_MS = Number(process.env.IMAGE_FETCH_TIMEOUT_MS) || 8_000;
+
+const HF_PARALLEL_TIMEOUT_MS = Number(process.env.HF_IMAGE_TIMEOUT_MS) || 2_500;
+const POLLINATIONS_TAIL_TIMEOUT_MS = 2_400;
+const STOCK_TIMEOUT_MS = 2_500;
+
+const sceneImageCache = new Map<string, Buffer>();
+
+function sceneCacheKey(prompt: string, seed: number) {
+  return `${seed}:${prompt.trim().slice(0, 240)}`;
+}
 
 function imageDimensions(ratio: ImageRatio) {
-  return ratio === "16:9" ? { width: 768, height: 432 } : { width: 432, height: 768 };
+  return ratio === "16:9" ? { width: 640, height: 360 } : { width: 360, height: 640 };
 }
 
 export function getActiveImageProvider(): ImageProvider {
@@ -43,7 +57,12 @@ export function buildPollinationsUrl(
   const s = seed ?? Date.now();
   // Do not pass model=flux — the public endpoint queues one request per IP and
   // flux stalls. Default Sana Sprint returns a JPEG in a few seconds.
-  return `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&nologo=true&seed=${s}`;
+  const token =
+    process.env.IMAGE_GEN_API_KEY?.trim() ||
+    process.env.POLLINATIONS_API_KEY?.trim() ||
+    "";
+  const keyQuery = token ? `&token=${encodeURIComponent(token)}` : "";
+  return `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&nologo=true&seed=${s}${keyQuery}`;
 }
 
 function isRasterImage(bytes: Buffer, contentType: string | null) {
@@ -93,7 +112,7 @@ async function fetchPollinationsOnce(
   prompt: string,
   seed: number,
   timeoutMs: number
-): Promise<{ bytes: Buffer | null; retry: boolean }> {
+): Promise<{ bytes: Buffer | null; retry: boolean; queued: boolean }> {
   const url = buildPollinationsUrl(prompt, "16:9", seed);
   try {
     const response = await fetch(url, {
@@ -106,34 +125,66 @@ async function fetchPollinationsOnce(
     });
     const bytes = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get("content-type");
-    if (response.ok && isRasterImage(bytes, contentType)) {
-      return { bytes, retry: false };
+    if (response.ok && isRasterImage(bytes, contentType) && bytes.length >= 8_000) {
+      return { bytes, retry: false, queued: false };
     }
     const body = bytes.toString("utf8").slice(0, 240);
     const queued = response.status === 402 || response.status === 429 || /queue full/i.test(body);
-    return { bytes: null, retry: queued || response.status >= 500 };
+    return { bytes: null, retry: queued || response.status >= 500, queued };
   } catch {
-    return { bytes: null, retry: true };
+    return { bytes: null, retry: true, queued: false };
   }
 }
 
 export async function fetchPollinationsImage(
   prompt: string,
   seed: number,
-  timeoutMs = IMAGE_FETCH_TIMEOUT_MS
+  timeoutMs = IMAGE_FETCH_TIMEOUT_MS,
+  maxAttempts = 2
 ): Promise<Buffer | null> {
+  const cached = sceneImageCache.get(sceneCacheKey(prompt, seed));
+  if (cached?.length) return cached;
+
   return withPollinationsLock(async () => {
+    const hit = sceneImageCache.get(sceneCacheKey(prompt, seed));
+    if (hit?.length) return hit;
+
     try {
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const result = await fetchPollinationsOnce(prompt, seed + attempt * 13, timeoutMs);
-        if (result.bytes) return result.bytes;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const result = await fetchPollinationsOnce(prompt, seed + attempt * 17, timeoutMs);
+        if (result.bytes?.length) {
+          sceneImageCache.set(sceneCacheKey(prompt, seed), result.bytes);
+          return result.bytes;
+        }
         if (!result.retry) break;
-        await sleep(400 * (attempt + 1));
+        if (attempt + 1 < maxAttempts) await sleep(350 * (attempt + 1));
       }
       return null;
     } finally {
-      await sleep(80);
+      await sleep(0);
     }
+  });
+}
+
+/** Returns whether Pollinations queue appears full (skip further sequential calls). */
+export async function fetchPollinationsImageWithStatus(
+  prompt: string,
+  seed: number,
+  timeoutMs = IMAGE_FETCH_TIMEOUT_MS
+): Promise<{ bytes: Buffer | null; queueDead: boolean }> {
+  const cached = sceneImageCache.get(sceneCacheKey(prompt, seed));
+  if (cached?.length) return { bytes: cached, queueDead: false };
+
+  return withPollinationsLock(async () => {
+    const hit = sceneImageCache.get(sceneCacheKey(prompt, seed));
+    if (hit?.length) return { bytes: hit, queueDead: false };
+
+    const result = await fetchPollinationsOnce(prompt, seed, timeoutMs);
+    if (result.bytes?.length) {
+      sceneImageCache.set(sceneCacheKey(prompt, seed), result.bytes);
+      return { bytes: result.bytes, queueDead: false };
+    }
+    return { bytes: null, queueDead: result.queued };
   });
 }
 
@@ -162,43 +213,43 @@ export type SceneImageRequest = {
   beat?: string | null;
 };
 
-/** Hugging Face stills in parallel; Pollinations stays sequential as backup. Skip Replicate (402). */
+/** Hugging Face in parallel; Pollinations sequential backup overlaps HF wait per scene. */
 export async function fetchSceneImagesParallel(
   items: SceneImageRequest[]
 ): Promise<Array<Buffer | null>> {
   const stills: Array<Buffer | null> = items.map(() => null);
+  const hfReady = isHuggingFaceConfigured() && isProviderOpen("hf");
 
-  if (isGeminiImageUsable()) {
-    const gemini = await Promise.all(items.map((item) => fetchGeminiImage(item.prompt, 2_500)));
-    gemini.forEach((bytes, index) => {
-      stills[index] = bytes;
-    });
-  }
+  const hfJobs = items.map((item, index) =>
+    (async () => {
+      if (!hfReady) return;
+      const bytes = await fetchHuggingFaceImage(item.prompt, HF_PARALLEL_TIMEOUT_MS);
+      if (bytes?.length) stills[index] = bytes;
+    })()
+  );
 
-  const missing = items
-    .map((item, index) => ({ item, index }))
-    .filter(({ index }) => !stills[index]?.length);
+  const pollJob = (async () => {
+    for (let index = 0; index < items.length; index += 1) {
+      if (stills[index]?.length) continue;
+      const item = items[index];
 
-  if (missing.length) {
-    const hf = await Promise.all(missing.map(({ item }) => fetchHuggingFaceImage(item.prompt, 8_000)));
-    hf.forEach((bytes, i) => {
-      if (bytes?.length) stills[missing[i].index] = bytes;
-    });
-  }
+      if (hfReady) {
+        await Promise.race([hfJobs[index], sleep(150)]);
+      }
+      if (stills[index]?.length) continue;
 
-  for (let index = 0; index < items.length; index += 1) {
-    if (stills[index]?.length) continue;
-    const item = items[index];
-    stills[index] =
-      (await fetchPollinationsImage(item.prompt, item.seed, 5_000)) ??
-      (await fetchStockImage(item.prompt, item.beat, 3_000, item.seed));
-  }
+      stills[index] =
+        (await fetchPollinationsImage(item.prompt, item.seed, POLLINATIONS_TAIL_TIMEOUT_MS, 2)) ??
+        (await fetchStockImage(item.prompt, item.beat, STOCK_TIMEOUT_MS, item.seed));
+    }
+  })();
 
+  await Promise.all([...hfJobs, pollJob]);
   return stills;
 }
 
 export function describeImageProvider() {
   const gemini = getGeminiImageStatus();
-  if (gemini.available && gemini.model) return `Gemini (${gemini.model})`;
-  return "Gemini → Hugging Face → Pollinations (auto-fallback)";
+  if (gemini.available && gemini.model) return `Gemini (${gemini.model}) → Pollinations`;
+  return "Pollinations (Gemini/HF used only when their image quota is active)";
 }

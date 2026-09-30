@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
 import { createYoutubeJobPayload } from "@/lib/script/youtube-job";
 
 type Params = { params: { id: string } };
 
 export async function POST(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const body = (await request.json()) as {
     url?: string;
@@ -23,7 +23,7 @@ export async function POST(request: Request, { params }: Params) {
     .from("projects")
     .select("id")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   if (projectError || !project) {
@@ -59,7 +59,7 @@ export async function POST(request: Request, { params }: Params) {
   const { data: job, error: jobError } = await supabase
     .from("job_queue")
     .insert({
-      user_id: user.id,
+      user_id: userId,
       project_id: params.id,
       type: "script_youtube",
       payload,

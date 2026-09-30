@@ -1,17 +1,17 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
+import * as demo from "@/lib/demo/api";
 
 export async function GET() {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
+  if (auth.isDemo) return demo.demoListProjects();
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
+  const supabase = auth.supabase!;
   const { data, error } = await supabase
     .from("projects")
     .select("*")
-    .eq("user_id", user.id)
+    .eq("user_id", auth.user.id)
     .order("updated_at", { ascending: false })
     .limit(20);
 
@@ -20,21 +20,21 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
   const body = (await request.json().catch(() => ({}))) as {
     title?: string;
     source_type?: "topic" | "youtube_url";
   };
 
+  if (auth.isDemo) return demo.demoCreateProject(body);
+
+  const supabase = auth.supabase!;
   const { data, error } = await supabase
     .from("projects")
     .insert({
-      user_id: user.id,
+      user_id: auth.user.id,
       title: body.title?.trim() || "Untitled project",
       source_type: body.source_type ?? null,
       status: "draft",

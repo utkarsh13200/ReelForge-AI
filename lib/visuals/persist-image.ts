@@ -4,7 +4,7 @@ import { fetchSceneImage } from "@/lib/providers/image";
 import { createKenBurnsVideo } from "@/lib/visuals/ken-burns-video";
 import { buildSceneImagePrompt } from "@/lib/visuals/prompt";
 import type { VisualAsset, VisualMode } from "@/lib/types/visual";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { visualsStorageClient } from "@/lib/visuals/visuals-storage";
 
 export async function persistSceneMedia(
   supabase: SupabaseClient,
@@ -16,7 +16,7 @@ export async function persistSceneMedia(
   beat?: string | null
 ) {
   const scriptPrompt = beat?.trim() ? buildSceneImagePrompt(beat) : prompt;
-  const admin = createAdminClient() ?? supabase;
+  const admin = visualsStorageClient(supabase);
   let stillBytes: Buffer | null = null;
 
   if (mode === "video") {

@@ -1,3 +1,5 @@
+import { absolutizeAppUrl } from "@/lib/demo/urls";
+
 export function isRasterImage(bytes: Buffer, contentType?: string | null) {
   if (bytes.length < 800) return false;
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return true;
@@ -38,7 +40,7 @@ export async function downloadMedia(
   timeoutMs = 45_000
 ): Promise<{ bytes: Buffer; contentType: string | null } | null> {
   try {
-    const response = await fetch(url, {
+    const response = await fetch(absolutizeAppUrl(url), {
       cache: "no-store",
       signal: AbortSignal.timeout(timeoutMs),
     });

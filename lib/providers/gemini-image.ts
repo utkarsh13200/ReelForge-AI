@@ -140,7 +140,7 @@ export async function fetchGeminiImage(
       if (!response.ok) {
         const text = await response.text();
         failure = describeApiError(response.status, text);
-        if (response.status === 429 && /limit: 0/.test(text)) {
+        if (response.status === 429 || (response.status === 403 && /key|permission/i.test(text))) {
           lastError = failure;
           cooldownUntil = Date.now() + COOLDOWN_MS;
           return null;
@@ -161,6 +161,9 @@ export async function fetchGeminiImage(
   }
 
   lastError = failure;
-  cooldownUntil = Date.now() + COOLDOWN_MS;
+  // Only park Gemini on permanent quota/key errors — not timeouts or empty responses.
+  if (failure && (/limit: 0|rejected the API key|403/.test(failure))) {
+    cooldownUntil = Date.now() + COOLDOWN_MS;
+  }
   return null;
 }

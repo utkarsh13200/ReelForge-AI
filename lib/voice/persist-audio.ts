@@ -1,5 +1,4 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createAdminClient } from "@/lib/supabase/admin";
 import type { WordTimestamp } from "@/lib/types/voice";
 
 export async function uploadVoiceChunk(
@@ -10,8 +9,7 @@ export async function uploadVoiceChunk(
   audio: Buffer
 ) {
   const path = `${userId}/${projectId}/chunks/${chunkIndex}.mp3`;
-  const storageClient = createAdminClient() ?? supabase;
-  const { error } = await storageClient.storage.from("voice").upload(path, audio, {
+  const { error } = await supabase.storage.from("voice").upload(path, audio, {
     contentType: "audio/mpeg",
     upsert: true,
   });
@@ -26,14 +24,13 @@ export async function uploadFinalVoiceover(
   audio: Buffer
 ) {
   const path = `${userId}/${projectId}/voiceover-${Date.now()}.mp3`;
-  const storageClient = createAdminClient() ?? supabase;
-  const { error } = await storageClient.storage.from("voice").upload(path, audio, {
+  const { error } = await supabase.storage.from("voice").upload(path, audio, {
     contentType: "audio/mpeg",
     upsert: true,
   });
   if (error) throw new Error(error.message);
 
-  const { data } = storageClient.storage.from("voice").getPublicUrl(path);
+  const { data } = supabase.storage.from("voice").getPublicUrl(path);
   return { path, url: data.publicUrl };
 }
 
@@ -41,11 +38,10 @@ export async function downloadVoiceChunks(
   supabase: SupabaseClient,
   chunkPaths: string[]
 ): Promise<Buffer[]> {
-  const storageClient = createAdminClient() ?? supabase;
   const buffers: Buffer[] = [];
 
   for (const path of chunkPaths) {
-    const { data, error } = await storageClient.storage.from("voice").download(path);
+    const { data, error } = await supabase.storage.from("voice").download(path);
     if (error || !data) throw new Error(error?.message || `Could not download chunk ${path}.`);
     buffers.push(Buffer.from(await data.arrayBuffer()));
   }

@@ -13,9 +13,32 @@ import { ModuleHeader } from "@/components/dashboard/module-header";
 import { WorkspaceNotice } from "@/components/dashboard/workspace-notice";
 import { JobProgressCard } from "@/components/dashboard/job-progress-card";
 import { useWorkspaceProject } from "@/hooks/use-workspace-project";
+import { useProject } from "@/components/dashboard/project-provider";
 import { apiFetch } from "@/lib/api/client";
 import { countWords } from "@/lib/script/utils";
 import { motionRenderNote, VISUAL_MODE_LABELS, formatVideoDuration, describeScenePlan, estimateVisualPipelineSeconds, formatCountdown } from "@/lib/video-gen";
+
+function SceneStill({ url, title }: { url: string; title: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+        <ImageIcon className="h-6 w-6 opacity-50" />
+        Image failed to load
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt={title}
+      className="h-full w-full object-cover"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+    />
+  );
+}
 
 function isVideoAsset(asset: VisualAsset) {
   return (
@@ -27,7 +50,8 @@ function isVideoAsset(asset: VisualAsset) {
 
 export function VisualsWorkspace({ initialProject }: { initialProject: Project | null }) {
   const { project, setProject, activeProjectId } = useWorkspaceProject(initialProject);
-  const [script, setScript] = useState(initialProject?.script ?? "");
+  const { scriptForVisuals, setScriptForVisuals } = useProject();
+  const [script, setScript] = useState(initialProject?.script ?? scriptForVisuals ?? "");
   const [assets, setAssets] = useState<VisualAsset[]>([]);
   const [visualMode, setVisualMode] = useState<VisualMode>("image");
   const [busy, setBusy] = useState(false);
@@ -41,10 +65,15 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
   );
 
   useEffect(() => {
-    setScript(project?.script ?? "");
-    // Intentionally ignore project.script updates so a newly pasted script is not overwritten.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only reset when switching projects
-  }, [activeProjectId, project?.id]);
+    if (scriptForVisuals?.trim()) {
+      setScript(scriptForVisuals);
+      setScriptForVisuals(null);
+      return;
+    }
+    if (project?.script?.trim()) {
+      setScript(project.script);
+    }
+  }, [scriptForVisuals, project?.script, project?.updated_at, activeProjectId, setScriptForVisuals]);
 
   const wordCount = useMemo(() => countWords(script), [script]);
   const hasScript = Boolean(script.trim());
@@ -81,6 +110,9 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
     );
     setProject(data.project);
     setAssets(data.assets ?? []);
+    if (data.project.script?.trim()) {
+      setScript(data.project.script);
+    }
     setVisualVideoUrl(data.project.visual_video_url ?? null);
     setVisualVideoDuration(
       data.project.visual_video_duration_seconds
@@ -138,7 +170,7 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
     [pollJob]
   );
 
-  async function saveScript() {
+  async function persistScript() {
     const active = await ensureProject();
     const data = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`, {
       method: "PATCH",
@@ -149,58 +181,33 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
     return data.project;
   }
 
-  async function splitScenes(projectId: string, mode: VisualMode): Promise<boolean> {
-    setBusy(true);
-    setNotice("Analyzing script and creating scene prompts…");
-    setJob(null);
-    setVisualVideoUrl(null);
-    try {
-      const data = await apiFetch<{ jobId: string }>(`/api/projects/${projectId}/visuals/split`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, script }),
-      });
-      const latest = await waitForJob(data.jobId);
-      if (latest.status === "failed") {
-        setNotice(latest.error || "Split failed.");
-        return false;
-      }
-      await loadVisuals(projectId);
-      return true;
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not split script.");
-      return false;
-    }
-  }
-
   async function runVisualPipeline() {
     if (!hasScript) {
       setNotice("Add a script first — write here or generate in Module 01.");
       return;
     }
+    if (visualMode === "video") {
+      setNotice("AI Video generation is coming soon. Switch to AI Image or Motion.");
+      return;
+    }
 
     setBusy(true);
-    setNotice(
-      visualMode === "video"
-        ? "Generating video from your script — providers fall back automatically if one fails."
-        : "Generating stills that match your latest script…"
-    );
+    setNotice("Generating script-matched AI stills for your opening scenes…");
     setJob(null);
     try {
-      const active = await saveScript();
-      const data = await apiFetch<{ jobId: string }>(`/api/projects/${active.id}/visuals/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: visualMode, fromScript: true, script }),
-      });
-      let latest = await pollJob(data.jobId);
-      let attempts = 0;
-      const maxAttempts = visualMode === "video" ? 600 : 300;
-      while ((latest.status === "queued" || latest.status === "running") && attempts < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        latest = await pollJob(data.jobId);
-        attempts += 1;
-      }
+      const active = await persistScript();
+      const data = await apiFetch<{ jobId: string; status?: string }>(
+        `/api/projects/${active.id}/visuals/generate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: visualMode, fromScript: true, script }),
+        }
+      );
+      const latest =
+        data.status === "completed"
+          ? await pollJob(data.jobId)
+          : await waitForJob(data.jobId);
       setBusy(false);
       if (latest.status === "failed") {
         setNotice(latest.error || "Generation failed.");
@@ -224,12 +231,28 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
       setNotice("Add a script first.");
       return;
     }
+    if (visualMode === "video") {
+      setNotice("AI Video generation is coming soon. Switch to AI Image or Motion.");
+      return;
+    }
     setBusy(true);
     try {
-      const active = await saveScript();
-      const ok = await splitScenes(active.id, visualMode);
+      const active = await persistScript();
+      setNotice("Analyzing script and creating scene prompts…");
+      setJob(null);
+      const data = await apiFetch<{ jobId: string }>(`/api/projects/${active.id}/visuals/split`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: visualMode, script }),
+      });
+      const latest = await waitForJob(data.jobId);
       setBusy(false);
-      if (ok) setNotice(`Created scenes from your script.`);
+      if (latest.status === "failed") {
+        setNotice(latest.error || "Could not split script.");
+        return;
+      }
+      await loadVisuals(active.id);
+      setNotice(`Created ${latest.sceneCount ?? assets.length} script-matched scenes.`);
     } catch (error) {
       setBusy(false);
       setNotice(error instanceof Error ? error.message : "Could not split script.");
@@ -248,6 +271,10 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
 
   async function regenerateScene(asset: VisualAsset) {
     if (!project?.id) return;
+    if (visualMode === "video") {
+      setNotice("AI Video generation is coming soon. Switch to AI Image or Motion.");
+      return;
+    }
     setBusy(true);
     setNotice(null);
     setJob(null);
@@ -276,7 +303,7 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
       <ModuleHeader
         step="Module 02 · Visuals"
         title="Visual production"
-        description="Build a complete silent AI video from your script — at least seven Image, Motion, or Video scenes that follow the narration."
+        description="Build a complete silent AI video from your script — 5 Image or Motion scenes matched to the narration in a 1-minute preview."
       />
 
       <Card className={visualVideoUrl ? "border-forge/30" : "border-dashed border-forge/20"}>
@@ -365,7 +392,7 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
               <CardTitle className="text-xl">Project script</CardTitle>
               <CardDescription>{wordCount.toLocaleString()} words</CardDescription>
             </div>
-            <Button variant="outline" size="sm" onClick={() => saveScript()} disabled={!script.trim() || busy}>
+            <Button variant="outline" size="sm" onClick={() => persistScript()} disabled={!script.trim() || busy}>
               Save script
             </Button>
           </CardHeader>
@@ -427,24 +454,30 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
                   type="button"
                   size="sm"
                   variant={visualMode === "video" ? "default" : "ghost"}
-                  onClick={() => setVisualMode("video")}
+                  onClick={() => {
+                    setVisualMode("video");
+                    setNotice("AI Video generation is coming soon. Use AI Image or Motion for now.");
+                  }}
                   disabled={busy}
-                  className="gap-1"
+                  className="relative gap-1"
                 >
                   <Video className="h-4 w-4" />
                   Video
+                  <span className="pointer-events-none absolute -right-1 -top-2 rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Soon
+                  </span>
                 </Button>
               </div>
             </div>
 
-            <Button onClick={runVisualPipeline} disabled={busy || !hasScript} className="w-full">
+            <Button onClick={runVisualPipeline} disabled={busy || !hasScript || visualMode === "video"} className="w-full">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               Generate {VISUAL_MODE_LABELS[visualMode].toLowerCase()} from script
             </Button>
 
             <Button
               onClick={splitScenesOnly}
-              disabled={busy || !hasScript}
+              disabled={busy || !hasScript || visualMode === "video"}
               variant="outline"
               className="w-full"
             >
@@ -482,12 +515,9 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
                   isVideoAsset(asset) ? (
                     <video src={asset.url} className="h-full w-full object-cover" controls muted loop playsInline />
                   ) : (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={asset.url}
-                      alt={asset.scene_title || `Scene ${asset.scene_index + 1}`}
-                      className="h-full w-full object-cover"
-                      referrerPolicy="no-referrer"
+                    <SceneStill
+                      url={asset.url}
+                      title={asset.scene_title || `Scene ${asset.scene_index + 1}`}
                     />
                   )
                 ) : (

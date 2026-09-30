@@ -1,5 +1,6 @@
 export type ThumbnailOverlay = {
   text: string;
+  subtext: string;
   x: number;
   y: number;
   fontSize: number;
@@ -44,7 +45,8 @@ export type ThumbnailJobPollResponse = {
 };
 
 export const DEFAULT_THUMBNAIL_OVERLAY = (headline: string): ThumbnailOverlay => ({
-  text: headline.toUpperCase().slice(0, 48),
+  text: headline.slice(0, 80),
+  subtext: "",
   x: 80,
   y: 520,
   fontSize: 72,

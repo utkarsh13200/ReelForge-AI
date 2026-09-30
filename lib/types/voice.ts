@@ -9,6 +9,7 @@ export type VoiceOption = {
   label: string;
   locale: string;
   gender: "Female" | "Male";
+  comingSoon?: boolean;
 };
 
 export type VoiceAsset = {

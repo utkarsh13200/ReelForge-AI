@@ -18,10 +18,12 @@ type ProjectContextValue = {
   activeProject: Project | null;
   activeProjectId: string | null;
   loading: boolean;
+  scriptForVisuals: string | null;
   setActiveProjectId: (id: string) => void;
   createProject: (title?: string) => Promise<Project>;
   refreshProjects: () => Promise<void>;
   updateProject: (project: Project) => void;
+  setScriptForVisuals: (script: string | null) => void;
 };
 
 const ProjectContext = createContext<ProjectContextValue | null>(null);
@@ -35,6 +37,7 @@ export function ProjectProvider({
 }) {
   const [projects, setProjects] = useState<Project[]>(seedProject ? [seedProject] : []);
   const [activeProjectId, setActiveProjectIdState] = useState<string | null>(seedProject?.id ?? null);
+  const [scriptForVisuals, setScriptForVisuals] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refreshProjects = useCallback(async () => {
@@ -94,12 +97,23 @@ export function ProjectProvider({
       activeProject,
       activeProjectId: activeProject?.id ?? null,
       loading,
+      scriptForVisuals,
       setActiveProjectId,
       createProject,
       refreshProjects,
       updateProject,
+      setScriptForVisuals,
     }),
-    [projects, activeProject, loading, setActiveProjectId, createProject, refreshProjects, updateProject]
+    [
+      projects,
+      activeProject,
+      loading,
+      scriptForVisuals,
+      setActiveProjectId,
+      createProject,
+      refreshProjects,
+      updateProject,
+    ]
   );
 
   return <ProjectContext.Provider value={value}>{children}</ProjectContext.Provider>;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
 import {
   generateThumbnailCandidates,
   MAX_UPLOAD_IMAGE_BYTES,
@@ -51,17 +51,17 @@ async function parseGenerateBody(request: Request) {
 }
 
 export async function POST(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const { data: project, error: projectError } = await supabase
     .from("projects")
     .select("id, title, script, visual_video_url, source_url")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   if (projectError || !project) {
@@ -103,7 +103,7 @@ export async function POST(request: Request, { params }: Params) {
   const { data: job, error: jobError } = await supabase
     .from("job_queue")
     .insert({
-      user_id: user.id,
+      user_id: userId,
       project_id: params.id,
       type: "thumbnail_generate",
       payload,
@@ -118,7 +118,7 @@ export async function POST(request: Request, { params }: Params) {
   }
 
   try {
-    const { rows, headline } = await generateThumbnailCandidates(supabase, user.id, params.id, {
+    const { rows, headline } = await generateThumbnailCandidates(supabase, userId, params.id, {
       title: project.title,
       script: project.script,
       visualVideoUrl: project.visual_video_url,

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createClient } from "@/lib/supabase/server";
 import { processVisualJobStep } from "@/lib/jobs/visual-jobs";
 import type { JobRecord } from "@/lib/types/project";
 import type { VisualMode } from "@/lib/types/visual";
@@ -40,15 +40,15 @@ async function enqueueAndProcessVisualJob(
       { status: 502 }
     );
   }
-  return NextResponse.json({ jobId: processed.id });
+  return NextResponse.json({ jobId: processed.id, status: processed.status, progress: processed.progress });
 }
 
 export async function POST(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const body = (await request.json().catch(() => ({}))) as {
     mode?: VisualMode;
@@ -67,7 +67,7 @@ export async function POST(request: Request, { params }: Params) {
       .from("projects")
       .update({ script: incomingScript, updated_at: new Date().toISOString() })
       .eq("id", params.id)
-      .eq("user_id", user.id);
+      .eq("user_id", userId);
     if (scriptError) return NextResponse.json({ error: scriptError.message }, { status: 500 });
   }
 
@@ -75,7 +75,7 @@ export async function POST(request: Request, { params }: Params) {
     .from("projects")
     .select("id, script")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   if (projectError || !project) {
@@ -105,7 +105,7 @@ export async function POST(request: Request, { params }: Params) {
     }
     return enqueueAndProcessVisualJob(
       supabase,
-      user.id,
+      userId,
       params.id,
       {
         kind: "visual_generate",
@@ -133,7 +133,7 @@ export async function POST(request: Request, { params }: Params) {
 
     return enqueueAndProcessVisualJob(
       supabase,
-      user.id,
+      userId,
       params.id,
       {
         kind: "visual_generate",
@@ -175,7 +175,7 @@ export async function POST(request: Request, { params }: Params) {
 
   return enqueueAndProcessVisualJob(
     supabase,
-    user.id,
+    userId,
     params.id,
     {
       kind: "visual_generate",

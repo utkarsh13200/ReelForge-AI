@@ -14,8 +14,20 @@ export function isHuggingFaceConfigured() {
   return Boolean(hfToken());
 }
 
-function imageModel() {
-  return process.env.HF_IMAGE_MODEL?.trim() || "black-forest-labs/FLUX.1-schnell";
+function imageModels() {
+  const configured = process.env.HF_IMAGE_MODEL?.trim();
+  const defaults = [
+    "black-forest-labs/FLUX.1-schnell",
+    "black-forest-labs/FLUX.2-dev",
+    "stabilityai/stable-diffusion-xl-base-1.0",
+  ];
+  return configured ? [configured, ...defaults.filter((item) => item !== configured)] : defaults;
+}
+
+let lastHfError: string | null = null;
+
+export function getHuggingFaceImageError() {
+  return lastHfError;
 }
 
 function imageProvider() {
@@ -38,39 +50,62 @@ function decodeImagePayload(json: unknown): string | null {
 
 export async function fetchHuggingFaceImage(prompt: string, timeoutMs = 12_000): Promise<Buffer | null> {
   if (!isHuggingFaceConfigured() || !isProviderOpen("hf")) return null;
-  try {
-    const response = await fetch(`https://router.huggingface.co/${imageProvider()}/v1/images/generations`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${hfToken()}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: imageModel(),
-        prompt: prompt.trim().slice(0, 800),
-        response_format: "b64_json",
-        n: 1,
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const text = await response.text();
-    if (shouldParkProvider(response.status, text)) {
-      parkProvider("hf");
-      return null;
+  const providers = [...new Set([imageProvider(), "together"])];
+  const models = imageModels();
+
+  for (const provider of providers) {
+    for (const model of models) {
+      try {
+        const response = await fetch(`https://router.huggingface.co/${provider}/v1/images/generations`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${hfToken()}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            prompt: prompt.trim().slice(0, 800),
+            response_format: "b64_json",
+            n: 1,
+          }),
+          cache: "no-store",
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        const text = await response.text();
+        if (response.status === 401 || response.status === 402) {
+          lastHfError = text.slice(0, 240);
+          parkProvider("hf");
+          return null;
+        }
+        if (response.status === 403 && /third-party|locked|forbidden/i.test(text)) {
+          lastHfError = text.slice(0, 240);
+          parkProvider("hf");
+          return null;
+        }
+        if (!response.ok) {
+          lastHfError = `HTTP ${response.status} ${text.slice(0, 160)}`;
+          continue;
+        }
+        const payload = decodeImagePayload(JSON.parse(text) as unknown);
+        if (!payload) continue;
+        if (payload.startsWith("b64:")) {
+          const bytes = Buffer.from(payload.slice(4), "base64");
+          if (isRasterImage(bytes, "image/jpeg")) {
+            lastHfError = null;
+            return bytes;
+          }
+        }
+        const downloaded = await downloadMedia(payload, 15_000);
+        if (downloaded && isRasterImage(downloaded.bytes, downloaded.contentType)) {
+          lastHfError = null;
+          return downloaded.bytes;
+        }
+      } catch (error) {
+        lastHfError = error instanceof Error ? error.message : "Hugging Face request failed";
+      }
     }
-    if (!response.ok) return null;
-    const payload = decodeImagePayload(JSON.parse(text) as unknown);
-    if (!payload) return null;
-    if (payload.startsWith("b64:")) {
-      const bytes = Buffer.from(payload.slice(4), "base64");
-      return isRasterImage(bytes, "image/jpeg") ? bytes : null;
-    }
-    const downloaded = await downloadMedia(payload, 15_000);
-    if (downloaded && isRasterImage(downloaded.bytes, downloaded.contentType)) return downloaded.bytes;
-  } catch {
-    // next provider
   }
+  parkProvider("hf");
   return null;
 }
 

@@ -9,8 +9,8 @@ export function resolveMotionRenderMode(mode: VisualMode) {
 
 /** Countdown while AI stills or video clips generate from the current script. */
 export function estimateVisualPipelineSeconds(_script: string, mode: VisualMode): number {
-  if (mode === "video") return 22;
-  return 10;
+  if (mode === "video") return 18;
+  return 15;
 }
 
 export function motionRenderNote(mode: VisualMode) {

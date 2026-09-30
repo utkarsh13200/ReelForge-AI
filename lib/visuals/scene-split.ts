@@ -63,9 +63,11 @@ function chunkScriptByWords(script: string, count: number): string[] {
     });
   }
   const size = Math.ceil(words.length / count);
-  return Array.from({ length: count }, (_, index) =>
+  const chunks = Array.from({ length: count }, (_, index) =>
     words.slice(index * size, (index + 1) * size).join(" ")
-  ).filter(Boolean);
+  );
+  const fallback = chunks.find(Boolean) || script.trim();
+  return chunks.map((chunk, index) => chunk || fallback || `Scene ${index + 1}`);
 }
 
 function expandBeatsToCount(beats: string[], target: number, fallbackScript: string): string[] {
@@ -110,9 +112,26 @@ export function splitScriptHeuristic(script: string, maxScenes?: number): SceneB
     }
   }
 
-  return groups.slice(0, cap).map((chunk, index) => {
-    const excerpt = chunk.trim().slice(0, 280);
-    const title = excerpt.split(/[\s,.;:]+/).filter(Boolean).slice(0, 4).join(" ") || `Scene ${index + 1}`;
+  while (groups.length < cap) {
+    groups.push(groups[groups.length - 1] || script.trim());
+  }
+
+  const scenes = groups.slice(0, cap).map((chunk, index) => {
+    const excerpt = chunk.trim().slice(0, 320);
+    const title =
+      excerpt.split(/[\s,.;:]+/).filter(Boolean).slice(0, 5).join(" ") || `Scene ${index + 1}`;
+    return {
+      title,
+      beat: excerpt,
+      prompt: buildSceneImagePrompt(excerpt, title),
+    };
+  });
+
+  if (scenes.length >= cap) return scenes;
+  return chunkScriptByWords(script, cap).map((chunk, index) => {
+    const excerpt = chunk.trim().slice(0, 320);
+    const title =
+      excerpt.split(/[\s,.;:]+/).filter(Boolean).slice(0, 5).join(" ") || `Scene ${index + 1}`;
     return {
       title,
       beat: excerpt,

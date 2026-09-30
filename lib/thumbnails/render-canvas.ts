@@ -3,6 +3,45 @@ import type { ThumbnailOverlay } from "@/lib/types/thumbnail";
 export const THUMBNAIL_WIDTH = 1280;
 export const THUMBNAIL_HEIGHT = 720;
 
+function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return [];
+  const lines: string[] = [];
+  let current = "";
+  for (const word of words) {
+    const test = current ? `${current} ${word}` : word;
+    if (current && ctx.measureText(test).width > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = test;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function paintLines(
+  ctx: CanvasRenderingContext2D,
+  lines: string[],
+  overlay: ThumbnailOverlay,
+  startY: number,
+  lineHeight: number
+) {
+  ctx.lineJoin = "round";
+  ctx.lineWidth = overlay.strokeWidth;
+  ctx.strokeStyle = overlay.strokeColor;
+  ctx.fillStyle = overlay.color;
+  ctx.textAlign = overlay.align;
+  ctx.textBaseline = "middle";
+
+  lines.forEach((line, index) => {
+    const y = startY + index * lineHeight;
+    if (overlay.strokeWidth > 0) ctx.strokeText(line, overlay.x, y);
+    ctx.fillText(line, overlay.x, y);
+  });
+}
+
 export function drawThumbnailCanvas(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement | null,
@@ -16,15 +55,22 @@ export function drawThumbnailCanvas(
     ctx.drawImage(image, 0, 0, THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT);
   }
 
+  const maxWidth = THUMBNAIL_WIDTH - 120;
+  const headline = overlay.text?.trim() ?? "";
+  const subtext = overlay.subtext?.trim() ?? "";
+
   ctx.font = `800 ${overlay.fontSize}px Inter, Arial, sans-serif`;
-  ctx.textAlign = overlay.align;
-  ctx.textBaseline = "middle";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = overlay.strokeWidth;
-  ctx.strokeStyle = overlay.strokeColor;
-  ctx.fillStyle = overlay.color;
-  ctx.strokeText(overlay.text, overlay.x, overlay.y);
-  ctx.fillText(overlay.text, overlay.x, overlay.y);
+  const headlineLines = wrapLines(ctx, headline, maxWidth);
+  const headlineHeight = overlay.fontSize * 1.12;
+  paintLines(ctx, headlineLines, overlay, overlay.y, headlineHeight);
+
+  if (subtext) {
+    const subSize = Math.max(28, Math.round(overlay.fontSize * 0.42));
+    ctx.font = `700 ${subSize}px Inter, Arial, sans-serif`;
+    const subLines = wrapLines(ctx, subtext, maxWidth);
+    const subStart = overlay.y + headlineLines.length * headlineHeight + subSize * 0.35;
+    paintLines(ctx, subLines, { ...overlay, strokeWidth: Math.max(2, overlay.strokeWidth - 2) }, subStart, subSize * 1.15);
+  }
 }
 
 export async function exportThumbnailPng(

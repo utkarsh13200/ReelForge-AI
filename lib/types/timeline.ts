@@ -30,6 +30,21 @@ export type BackgroundMusic = {
   volume: number;
 };
 
+export type TimelineQuickStyle =
+  | "none"
+  | "grayscale"
+  | "high-contrast"
+  | "warm"
+  | "cool"
+  | "vintage";
+
+export type TimelineEffects = {
+  brightness: number;
+  contrast: number;
+  gamma: number;
+  quickStyle: TimelineQuickStyle;
+};
+
 export type TimelineJson = {
   version: 1;
   aspectRatio: TimelineAspectRatio;
@@ -44,6 +59,7 @@ export type TimelineJson = {
   } | null;
   scenes: TimelineScene[];
   music: BackgroundMusic | null;
+  effects?: TimelineEffects | null;
 };
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
@@ -59,4 +75,20 @@ export const ASPECT_RATIO_OPTIONS: Array<{ value: TimelineAspectRatio; label: st
   { value: "16:9", label: "16:9 YouTube" },
   { value: "9:16", label: "9:16 Shorts" },
   { value: "1:1", label: "1:1 Square" },
+];
+
+export const DEFAULT_TIMELINE_EFFECTS: TimelineEffects = {
+  brightness: 0,
+  contrast: 0,
+  gamma: 1,
+  quickStyle: "none",
+};
+
+export const QUICK_STYLE_OPTIONS: Array<{ value: TimelineQuickStyle; label: string }> = [
+  { value: "none", label: "Original" },
+  { value: "grayscale", label: "Grayscale" },
+  { value: "high-contrast", label: "Auto contrast" },
+  { value: "warm", label: "Warm" },
+  { value: "cool", label: "Cool" },
+  { value: "vintage", label: "Vintage" },
 ];

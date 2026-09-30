@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import {
   Download,
   FileText,
+  Home,
   ImageIcon,
-  LogOut,
   Mic2,
   Scissors,
   Sparkles,
@@ -15,7 +15,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { createClient } from "@/lib/supabase/client";
 import { BrandLogo } from "@/components/marketing/brand-logo";
 import { useModuleNav } from "@/components/dashboard/module-nav";
 
@@ -36,18 +35,12 @@ export function DashboardSidebar({
 }: {
   userName: string;
   userEmail: string;
+  isDemo?: boolean;
   mobileOpen?: boolean;
   onNavigate?: () => void;
 }) {
   const router = useRouter();
   const { activeHref, onNavClick } = useModuleNav();
-
-  async function signOut() {
-    const supabase = createClient();
-    if (supabase) await supabase.auth.signOut();
-    router.replace("/login");
-    router.refresh();
-  }
 
   return (
     <aside
@@ -120,9 +113,14 @@ export function DashboardSidebar({
           <p className="truncate text-sm font-medium">{userName}</p>
           <p className="truncate text-xs text-muted-foreground">{userEmail}</p>
         </div>
-        <Button variant="ghost" size="sm" className="mt-3 w-full justify-start text-muted-foreground" onClick={signOut}>
-          <LogOut className="h-4 w-4" />
-          Sign out
+        <Button
+          variant="ghost"
+          size="sm"
+          className="mt-3 w-full justify-start text-muted-foreground"
+          onClick={() => router.replace("/")}
+        >
+          <Home className="h-4 w-4" />
+          Home
         </Button>
       </div>
     </aside>

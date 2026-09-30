@@ -1,4 +1,4 @@
-const DEFAULT_MAX_CHARS = 2000;
+const DEFAULT_MAX_CHARS = 700;
 
 export function chunkScriptForTts(script: string, maxChars = DEFAULT_MAX_CHARS): string[] {
   const normalized = script.replace(/\s+/g, " ").trim();

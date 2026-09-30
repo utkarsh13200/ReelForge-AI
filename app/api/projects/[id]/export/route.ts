@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
+import * as demo from "@/lib/demo/api";
 import { buildDefaultTimeline, mergeTimelineAssets } from "@/lib/timeline/build-timeline";
 import { validateTimelineForExport } from "@/lib/export/validate-timeline";
 import { loadPipelineStatus } from "@/lib/project/load-pipeline-status";
@@ -11,17 +12,17 @@ type Params = { params: { id: string } };
 export const maxDuration = 300;
 
 export async function GET(_request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
+  if (auth.isDemo) return demo.demoGetExport(params.id);
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
 
   const { data: project, error: projectError } = await supabase
     .from("projects")
     .select("*")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", auth.user.id)
     .single();
 
   if (projectError || !project) {
@@ -51,11 +52,11 @@ export async function GET(_request: Request, { params }: Params) {
 }
 
 export async function POST(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const body = (await request.json().catch(() => ({}))) as { aspectRatio?: "16:9" | "9:16" | "1:1" };
 
@@ -63,7 +64,7 @@ export async function POST(request: Request, { params }: Params) {
     .from("projects")
     .select("*")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", auth.user.id)
     .single();
 
   if (projectError || !project) {
@@ -135,7 +136,7 @@ export async function POST(request: Request, { params }: Params) {
   const { data: job, error: jobError } = await supabase
     .from("job_queue")
     .insert({
-      user_id: user.id,
+      user_id: userId,
       project_id: params.id,
       type: "export_render",
       payload,
@@ -153,7 +154,7 @@ export async function POST(request: Request, { params }: Params) {
     return NextResponse.json({ jobId: job.id, exportJobId: exportJob.id, aspectRatio, status: "queued" });
   }
 
-  const processed = await processExportJobStep(supabase, { ...job, status: "running" } as JobRecord, user.id);
+  const processed = await processExportJobStep(supabase, { ...job, status: "running" } as JobRecord, userId);
   if (processed.status === "failed") {
     return NextResponse.json(
       { error: processed.error || "Export failed.", jobId: processed.id, exportJobId: exportJob.id },

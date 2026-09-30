@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
+import * as demo from "@/lib/demo/api";
 import type { TimelineJson } from "@/lib/types/timeline";
 import { normalizeTimeline } from "@/lib/timeline/recompute";
 
@@ -12,11 +13,8 @@ function isTimelineJson(value: unknown): value is TimelineJson {
 }
 
 export async function PUT(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
   const body = (await request.json()) as { timeline?: TimelineJson };
   if (!body.timeline || !isTimelineJson(body.timeline)) {
@@ -24,6 +22,9 @@ export async function PUT(request: Request, { params }: Params) {
   }
 
   const timeline = normalizeTimeline(body.timeline);
+  if (auth.isDemo) return demo.demoSaveTimeline(params.id, timeline);
+
+  const supabase = auth.supabase!;
 
   const { data, error } = await supabase
     .from("projects")
@@ -33,7 +34,7 @@ export async function PUT(request: Request, { params }: Params) {
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", auth.user.id)
     .select("*")
     .single();
 

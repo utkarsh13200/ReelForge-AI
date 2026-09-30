@@ -1,21 +1,18 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
 import { generateSceneVideo } from "@/lib/providers/scene-video";
 import { fetchSceneImage } from "@/lib/providers/image";
 import { createKenBurnsVideo } from "@/lib/visuals/ken-burns-video";
-import { createAdminClient } from "@/lib/supabase/admin";
 import type { FalAspectRatio } from "@/lib/providers/fal-video";
 
 type Params = { params: { id: string } };
 
 export async function POST(request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const body = (await request.json().catch(() => ({}))) as {
     prompt?: string;
@@ -32,7 +29,7 @@ export async function POST(request: Request, { params }: Params) {
     .from("projects")
     .select("id")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   if (projectError || !project) {
@@ -52,15 +49,14 @@ export async function POST(request: Request, { params }: Params) {
       );
     }
 
-    const admin = createAdminClient() ?? supabase;
-    const storagePath = `${user.id}/${params.id}/t2v-${Date.now()}.mp4`;
-    const { error: uploadError } = await admin.storage.from("visuals").upload(storagePath, bytes, {
+    const storagePath = `${userId}/${params.id}/t2v-${Date.now()}.mp4`;
+    const { error: uploadError } = await supabase.storage.from("visuals").upload(storagePath, bytes, {
       contentType: "video/mp4",
       upsert: true,
     });
     if (uploadError) throw new Error(uploadError.message);
 
-    const url = admin.storage.from("visuals").getPublicUrl(storagePath).data.publicUrl;
+    const url = supabase.storage.from("visuals").getPublicUrl(storagePath).data.publicUrl;
     return NextResponse.json({ url, provider: "fallback-chain" });
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : "Video generation failed.";

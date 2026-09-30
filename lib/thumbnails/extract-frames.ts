@@ -4,20 +4,18 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
 import { resolveFfmpegPath } from "@/lib/visuals/ffmpeg-path";
+import { downloadMedia } from "@/lib/providers/media-bytes";
+import { readDemoMediaFromUrl } from "@/lib/demo/media-store";
 
 const execFileAsync = promisify(execFile);
 
 const FRAME_TIMES = ["00:00:00.3", "00:00:02", "00:00:05", "00:00:10"];
 
 export async function downloadMediaBytes(url: string, timeoutMs = 45_000): Promise<Buffer | null> {
-  try {
-    const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
-    if (!response.ok) return null;
-    const bytes = Buffer.from(await response.arrayBuffer());
-    return bytes.length > 1000 ? bytes : null;
-  } catch {
-    return null;
-  }
+  const local = readDemoMediaFromUrl(url);
+  if (local?.bytes && local.bytes.length > 1000) return local.bytes;
+  const downloaded = await downloadMedia(url, timeoutMs);
+  return downloaded && downloaded.bytes.length > 1000 ? downloaded.bytes : null;
 }
 
 export async function extractVideoFramesFromUrl(url: string, count = 3): Promise<Buffer[]> {

@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { fetchSceneImage } from "@/lib/providers/image";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 function sniffImageType(bytes: Buffer): { contentType: string; ext: string } {
   if (bytes[0] === 0xff && bytes[1] === 0xd8) return { contentType: "image/jpeg", ext: "jpg" };
@@ -24,14 +23,13 @@ export async function persistThumbnailCandidateFromBytes(
 
   const { contentType, ext } = sniffImageType(bytes);
   const path = `${userId}/${projectId}/candidate-${index}-${Date.now()}.${ext}`;
-  const storageClient = createAdminClient() ?? supabase;
-  const { error: uploadError } = await storageClient.storage.from("thumbnails").upload(path, bytes, {
+  const { error: uploadError } = await supabase.storage.from("thumbnails").upload(path, bytes, {
     contentType,
     upsert: true,
   });
   if (uploadError) throw new Error(uploadError.message);
 
-  const { data: publicData } = storageClient.storage.from("thumbnails").getPublicUrl(path);
+  const { data: publicData } = supabase.storage.from("thumbnails").getPublicUrl(path);
 
   const { data, error } = await supabase
     .from("thumbnails")
@@ -80,14 +78,13 @@ export async function persistFinalThumbnail(
   pngBytes: Buffer
 ) {
   const path = `${userId}/${projectId}/final-${thumbnailId}-${Date.now()}.png`;
-  const storageClient = createAdminClient() ?? supabase;
-  const { error: uploadError } = await storageClient.storage.from("thumbnails").upload(path, pngBytes, {
+  const { error: uploadError } = await supabase.storage.from("thumbnails").upload(path, pngBytes, {
     contentType: "image/png",
     upsert: true,
   });
   if (uploadError) throw new Error(uploadError.message);
 
-  const { data: publicData } = storageClient.storage.from("thumbnails").getPublicUrl(path);
+  const { data: publicData } = supabase.storage.from("thumbnails").getPublicUrl(path);
   const finalUrl = publicData.publicUrl;
 
   await supabase.from("thumbnails").update({ is_selected: false }).eq("project_id", projectId);

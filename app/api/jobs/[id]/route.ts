@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireApiUser } from "@/lib/auth/require-api-user";
 import { buildJobResponse, processJobStep } from "@/lib/jobs/process-job";
 import { attachVisualJobExtras, isVisualJobBusy } from "@/lib/jobs/visual-jobs";
+import { continueVoiceJobInBackground, isVoiceJobBusy } from "@/lib/jobs/voice-jobs";
 import type { JobRecord } from "@/lib/types/project";
 
 type Params = { params: { id: string } };
@@ -9,17 +10,17 @@ type Params = { params: { id: string } };
 export const maxDuration = 300;
 
 export async function GET(_request: Request, { params }: Params) {
-  const supabase = await createClient();
-  if (!supabase) return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  const auth = await requireApiUser();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const supabase = auth.supabase!;
+  const userId = auth.user.id;
 
   const { data: job, error } = await supabase
     .from("job_queue")
     .select("*")
     .eq("id", params.id)
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   if (error || !job) return NextResponse.json({ error: "Job not found." }, { status: 404 });
@@ -31,18 +32,43 @@ export async function GET(_request: Request, { params }: Params) {
   const skipVisualWork =
     current.type.startsWith("visual_") &&
     (current.status === "running" || isVisualJobBusy(current.id));
+  const isVoice = current.type.startsWith("voice_");
 
+  // Voice TTS can take tens of seconds per chunk — never block the poll HTTP request on it.
+  // Kick (or resume) background work, then return the latest DB snapshot immediately.
   if (
+    isVoice &&
     (current.status === "queued" || current.status === "running") &&
-    !deferToWorker &&
-    !deferExport &&
-    !skipVisualWork
+    !isVoiceJobBusy(current.id)
   ) {
     if (current.status === "queued") {
       await supabase.from("job_queue").update({ status: "running" }).eq("id", current.id);
       current = { ...current, status: "running" };
     }
-    current = await processJobStep(supabase, current, user.id);
+    continueVoiceJobInBackground(supabase, current, userId);
+  }
+
+  if (
+    (current.status === "queued" || current.status === "running") &&
+    !deferToWorker &&
+    !deferExport &&
+    !skipVisualWork &&
+    !isVoice
+  ) {
+    if (current.status === "queued") {
+      await supabase.from("job_queue").update({ status: "running" }).eq("id", current.id);
+      current = { ...current, status: "running" };
+    }
+    current = await processJobStep(supabase, current, userId);
+  }
+
+  if (isVoice && (current.status === "queued" || current.status === "running")) {
+    const { data: fresh } = await supabase
+      .from("job_queue")
+      .select("*")
+      .eq("id", current.id)
+      .single();
+    if (fresh) current = fresh as JobRecord;
   }
 
   const response = buildJobResponse(current);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, Sparkles, Youtube } from "lucide-react";
+import { Loader2, Sparkles, Youtube, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,8 @@ import { WorkspaceNotice } from "@/components/dashboard/workspace-notice";
 import { JobProgressCard } from "@/components/dashboard/job-progress-card";
 import { Select } from "@/components/ui/select";
 import { useWorkspaceProject } from "@/hooks/use-workspace-project";
+import { useModuleNav } from "@/components/dashboard/module-nav";
+import { useProject } from "@/components/dashboard/project-provider";
 import { apiFetch } from "@/lib/api/client";
 
 type JobPoll = {
@@ -29,11 +31,13 @@ type JobPoll = {
 
 export function ScriptWorkspace({ initialProject }: { initialProject: Project | null }) {
   const { project, setProject, activeProjectId } = useWorkspaceProject(initialProject);
+  const { goTo } = useModuleNav();
+  const { setScriptForVisuals } = useProject();
   const [topic, setTopic] = useState("");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [tone, setTone] = useState("educational");
   const [customTone, setCustomTone] = useState("");
-  const [duration, setDuration] = useState("long");
+  const [duration, setDuration] = useState("1");
   const [modifyTranscript, setModifyTranscript] = useState(true);
   const [modifyInstructions, setModifyInstructions] = useState(
     "Rewrite this transcript into a polished YouTube narration script. Fix punctuation, remove filler words, and break into paragraphs."
@@ -49,7 +53,8 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
   const [job, setJob] = useState<JobPoll | null>(null);
 
   const wordCount = useMemo(() => countWords(script), [script]);
-  const targetWords = DURATION_OPTIONS.find((option) => option.value === duration)?.targetWords ?? 4500;
+  const targetWords = DURATION_OPTIONS.find((option) => option.value === duration)?.targetWords ?? 150;
+  const durationLabel = DURATION_OPTIONS.find((option) => option.value === duration)?.label ?? "1 min";
 
   const ensureProject = useCallback(async () => {
     if (project?.id) return project;
@@ -77,9 +82,14 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
         const latest = await pollJob(job.id);
         if (latest.status === "completed") {
           setBusy(false);
-          setNotice("Script saved to your project.");
+          setNotice("Script ready — continue to Visuals when you're happy with it.");
           const projectData = await apiFetch<{ project: Project }>(`/api/projects/${latest.projectId}`);
           setProject(projectData.project);
+          if (projectData.project.script?.trim()) {
+            setScript(projectData.project.script);
+          } else if (latest.script?.trim()) {
+            setScript(latest.script);
+          }
         }
         if (latest.status === "failed") {
           setBusy(false);
@@ -92,7 +102,41 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
     }, 2000);
 
     return () => window.clearInterval(timer);
-  }, [job, pollJob, setProject]);
+  }, [job, pollJob, setProject, goTo]);
+
+  async function continueToVisuals() {
+    const text = script.trim();
+    if (!text) {
+      setNotice("Generate or write a script first.");
+      return;
+    }
+    setNotice(null);
+    try {
+      let active = project;
+      if (project?.id) {
+        const data = await apiFetch<{ project: Project }>(`/api/projects/${project.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ script: text }),
+        });
+        active = data.project;
+        setProject(active);
+      } else {
+        active = await ensureProject();
+        const data = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ script: text }),
+        });
+        active = data.project;
+        setProject(active);
+      }
+      setScriptForVisuals(text);
+      goTo("/dashboard/visuals");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not save script.");
+    }
+  }
 
   async function startTopicGeneration() {
     if (!topic.trim()) {
@@ -121,7 +165,11 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
       }
       if (first.status === "completed") {
         setBusy(false);
-        setNotice("Script saved to your project.");
+        setNotice("Script ready — continue to Visuals when you're happy with it.");
+        const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
+        setProject(projectData.project);
+        const savedScript = projectData.project.script?.trim() || first.script?.trim() || "";
+        if (savedScript) setScript(savedScript);
       }
     } catch (error) {
       setBusy(false);
@@ -164,22 +212,6 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
     }
   }
 
-  async function saveScript() {
-    if (!project?.id) return;
-    setNotice(null);
-    try {
-      const data = await apiFetch<{ project: Project }>(`/api/projects/${project.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ script }),
-      });
-      setProject(data.project);
-      setNotice("Script saved.");
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not save script.");
-    }
-  }
-
   return (
     <div className="mx-auto max-w-5xl space-y-8">
       <ModuleHeader
@@ -199,7 +231,7 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
             <CardHeader>
               <CardTitle className="text-xl">Write from a topic</CardTitle>
               <CardDescription>
-                AI writes ~{targetWords.toLocaleString()} words in sections — progress shows live below.
+                AI writes a {durationLabel} script (~{targetWords.toLocaleString()} words) in sections — progress shows live below.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -322,10 +354,13 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
           <div>
             <CardTitle className="text-xl">Your script</CardTitle>
-            <CardDescription>{wordCount.toLocaleString()} words</CardDescription>
+            <CardDescription>
+              {wordCount.toLocaleString()} words — saved automatically when you continue to Visuals.
+            </CardDescription>
           </div>
-          <Button variant="outline" onClick={saveScript} disabled={!project?.id || !script.trim()}>
-            Save edits
+          <Button onClick={continueToVisuals} disabled={!script.trim() || busy} className="shrink-0 gap-1">
+            Next: Visuals
+            <ArrowRight className="h-4 w-4" />
           </Button>
         </CardHeader>
         <CardContent>

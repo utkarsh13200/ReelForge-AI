@@ -2,7 +2,13 @@ import { chatCompletion, parseJsonArray } from "@/lib/providers/llm";
 import type { ScriptTopicJobPayload } from "@/lib/types/project";
 import { countWords } from "@/lib/script/utils";
 
-const SECTION_COUNT = 9;
+function sectionCountForTargetWords(targetWords: number) {
+  if (targetWords <= 200) return 3;
+  if (targetWords <= 600) return 4;
+  if (targetWords <= 1200) return 6;
+  if (targetWords <= 2400) return 9;
+  return 12;
+}
 
 function toneLabel(payload: ScriptTopicJobPayload) {
   if (payload.tone === "others" && payload.customTone?.trim()) return payload.customTone.trim();
@@ -18,6 +24,7 @@ export function createTopicJobPayload(input: {
   duration: string;
   targetWords: number;
 }): ScriptTopicJobPayload {
+  const totalSections = sectionCountForTargetWords(input.targetWords);
   return {
     kind: "script_topic",
     projectId: input.projectId,
@@ -29,7 +36,7 @@ export function createTopicJobPayload(input: {
     phase: "outline",
     outline: [],
     currentSection: 0,
-    totalSections: SECTION_COUNT,
+    totalSections,
     sections: [],
     script: "",
     message: "Planning your script outline…",
@@ -37,6 +44,8 @@ export function createTopicJobPayload(input: {
 }
 
 export async function advanceTopicJob(payload: ScriptTopicJobPayload): Promise<ScriptTopicJobPayload> {
+  const sectionTarget = payload.totalSections || sectionCountForTargetWords(payload.targetWords);
+
   if (payload.phase === "outline") {
     const outlineRaw = await chatCompletion(
       [
@@ -47,21 +56,22 @@ export async function advanceTopicJob(payload: ScriptTopicJobPayload): Promise<S
         },
         {
           role: "user",
-          content: `Create a beat sheet with exactly ${SECTION_COUNT} sections for a YouTube video about "${payload.topic}".
-Tone: ${toneLabel(payload)}. Target length label: ${payload.duration}.
+          content: `Create a beat sheet with exactly ${sectionTarget} sections for a YouTube video about "${payload.topic}".
+Tone: ${toneLabel(payload)}. Target length: ${payload.duration} min (~${payload.targetWords} words).
 Return a JSON array of section titles (strings only).`,
         },
       ],
       800
     );
     const outline = await parseJsonArray(outlineRaw);
+    const totalSections = Math.min(outline.length, sectionTarget) || sectionTarget;
     return {
       ...payload,
       phase: "sections",
-      outline: outline.slice(0, SECTION_COUNT),
-      totalSections: Math.min(outline.length, SECTION_COUNT) || SECTION_COUNT,
+      outline: outline.slice(0, sectionTarget),
+      totalSections,
       currentSection: 0,
-      message: `Outline ready — writing section 1 of ${Math.min(outline.length, SECTION_COUNT) || SECTION_COUNT}…`,
+      message: `Outline ready — writing section 1 of ${totalSections}…`,
     };
   }
 

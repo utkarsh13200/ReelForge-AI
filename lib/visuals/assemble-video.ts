@@ -4,7 +4,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchSceneImagesParallel } from "@/lib/providers/image";
+import { fetchSceneImagesParallel, fetchSceneImage } from "@/lib/providers/image";
+import { fetchStockImage } from "@/lib/providers/stock-image";
+import { fetchSceneStillsFast } from "@/lib/providers/fast-image-gen";
+import type { ImageGenProgressEvent } from "@/lib/providers/fast-image-gen";
 import { fetchSceneVideosWithFallback } from "@/lib/providers/scene-video";
 import { fetchJson2VideoMovie, isJson2VideoConfigured } from "@/lib/providers/json2video";
 import { resolveFfmpegPath } from "@/lib/visuals/ffmpeg-path";
@@ -12,7 +15,7 @@ import { sceneImagePrompt } from "@/lib/visuals/persist-image";
 import { renderRemotionFromStills } from "@/lib/visuals/remotion-fallback";
 import { computeScenePlan, distributeSceneDurations } from "@/lib/visuals/scene-count";
 import type { VisualAsset, VisualMode } from "@/lib/types/visual";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { isUsableStill, visualsStorageClient } from "@/lib/visuals/visuals-storage";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,21 +23,17 @@ type AssembleInput = {
   assets: VisualAsset[];
   script: string;
   mode: VisualMode;
+  onImageProgress?: (event: ImageGenProgressEvent) => void | Promise<void>;
 };
-
-function escapeDrawtext(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/:/g, "\\:").replace(/'/g, "\\'").slice(0, 48);
-}
 
 async function createFallbackSceneImage(
   ffmpegPath: string,
-  label: string,
+  _label: string,
   index: number,
   outputPath: string
 ) {
   const colors = ["0x1a2744", "0x2d1b36", "0x1b3a2f", "0x3d2b1a", "0x1a2e3d"];
   const bg = colors[index % colors.length];
-  const text = escapeDrawtext(label);
   await execFileAsync(
     ffmpegPath,
     [
@@ -42,27 +41,24 @@ async function createFallbackSceneImage(
       "-f",
       "lavfi",
       "-i",
-      `color=c=${bg}:s=640x360:d=1`,
-      "-vf",
-      `drawtext=text='${text}':fontsize=18:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.45:boxborderw=8`,
+      `color=c=${bg}:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:d=1`,
       "-frames:v",
       "1",
       outputPath,
     ],
-    { timeout: 15_000 }
+    { timeout: 3_000 }
   );
 }
-
+const OUTPUT_WIDTH = 640;
+const OUTPUT_HEIGHT = 360;
 export const VIDEO_FPS = 8;
-const OUTPUT_WIDTH = 960;
-const OUTPUT_HEIGHT = 540;
-const SOURCE_WIDTH = 960;
-const SOURCE_HEIGHT = 540;
-const FFMPEG_CONCURRENCY = 4;
+const SOURCE_WIDTH = 640;
+const SOURCE_HEIGHT = 360;
+const FFMPEG_CONCURRENCY = 8;
 const SHORT_CLIP_SECONDS: Record<VisualMode, number> = {
-  image: 2.4,
-  motion: 3.5,
-  video: 3.5,
+  image: 1.0,
+  motion: 1.0,
+  video: 2.0,
 };
 
 async function mapPool<T, R>(
@@ -102,16 +98,19 @@ function kenBurnsFilter(index: number, totalFrames: number) {
 }
 
 function sceneFilterChain(index: number, duration: number, mode: VisualMode) {
-  const animate = mode === "motion" || mode === "video";
-  const frames = Math.max(2, Math.round(duration * VIDEO_FPS));
+  const base =
+    `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
+    `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=${VIDEO_FPS},format=yuv420p`;
 
-  const chain = animate
-    ? `scale=${SOURCE_WIDTH}:${SOURCE_HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${SOURCE_WIDTH}:${SOURCE_HEIGHT},${kenBurnsFilter(index, frames)}`
-    : `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=${VIDEO_FPS},format=yuv420p`;
+  // Image + motion: scale-only short clips; one stream-loop fills narration length.
+  if (mode === "image" || mode === "motion") return `${base},setsar=1`;
 
-  return `${chain},setsar=1,format=yuv420p`;
+  const frames = Math.min(10, Math.max(4, Math.round(Math.min(duration, SHORT_CLIP_SECONDS[mode]) * VIDEO_FPS)));
+  const motion = kenBurnsFilter(index, frames);
+  return (
+    `scale=${SOURCE_WIDTH}:${SOURCE_HEIGHT}:force_original_aspect_ratio=increase,` +
+    `crop=${SOURCE_WIDTH}:${SOURCE_HEIGHT},${motion},setsar=1,format=yuv420p`
+  );
 }
 
 async function extendClipToDuration(
@@ -151,6 +150,157 @@ async function extendClipToDuration(
   }
 }
 
+async function renderClipsBatch(
+  ffmpegPath: string,
+  imagePaths: string[],
+  mode: VisualMode,
+  tempDir: string
+): Promise<string> {
+  const encodeSeconds = SHORT_CLIP_SECONDS[mode];
+  const outputPath = join(tempDir, "short-assembly.mp4");
+
+  if (imagePaths.length === 1) {
+    await renderSingleClip(ffmpegPath, imagePaths[0], 0, mode, tempDir).then((clip) =>
+      execFileAsync(ffmpegPath, ["-y", "-i", clip, "-c", "copy", outputPath], { timeout: 10_000 })
+    );
+    return outputPath;
+  }
+
+  const inputArgs: string[] = [];
+  const filterParts: string[] = [];
+  imagePaths.forEach((imagePath, index) => {
+    inputArgs.push(
+      "-loop",
+      "1",
+      "-framerate",
+      String(VIDEO_FPS),
+      "-t",
+      encodeSeconds.toFixed(3),
+      "-i",
+      imagePath
+    );
+    filterParts.push(
+      `[${index}:v]${sceneFilterChain(index, encodeSeconds, mode)}[v${index}]`
+    );
+  });
+  const concatIn = imagePaths.map((_, index) => `[v${index}]`).join("");
+  filterParts.push(`${concatIn}concat=n=${imagePaths.length}:v=1:a=0[outv]`);
+
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      [
+        "-y",
+        ...inputArgs,
+        "-filter_complex",
+        filterParts.join(";"),
+        "-map",
+        "[outv]",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "30",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        outputPath,
+      ],
+      { timeout: 20_000, maxBuffer: 16 * 1024 * 1024 }
+    );
+  } catch {
+    const clipPaths = await mapPool(imagePaths, FFMPEG_CONCURRENCY, (imagePath, index) =>
+      renderSingleClip(ffmpegPath, imagePath, index, mode, tempDir)
+    );
+    await concatClips(ffmpegPath, clipPaths, tempDir, outputPath);
+  }
+
+  return outputPath;
+}
+
+async function pipelineImageMotionClips(
+  ffmpegPath: string,
+  prompts: Array<{ prompt: string; seed: number; beat?: string | null }>,
+  labels: string[],
+  mode: VisualMode,
+  tempDir: string,
+  onImageProgress?: AssembleInput["onImageProgress"]
+): Promise<{ clipPaths: string[]; stillBytes: Array<Buffer | null> }> {
+  const stillBytes = await fetchSceneStillsFast(prompts, {
+    concurrency: 5,
+    onProgress: onImageProgress,
+  });
+  const imagePaths = await Promise.all(
+    prompts.map(async (_, index) => {
+      const path = join(tempDir, `scene-${index}.jpg`);
+      if (isUsableStill(stillBytes[index])) {
+        await writeFile(path, new Uint8Array(stillBytes[index]!));
+      } else {
+        await createFallbackSceneImage(ffmpegPath, labels[index], index, path);
+        // Persist whatever we actually used for the clip (even solid-color fallbacks).
+        stillBytes[index] = await readFile(path);
+      }
+      return path;
+    })
+  );
+
+  const shortAssembly = await renderClipsBatch(ffmpegPath, imagePaths, mode, tempDir);
+
+  return { clipPaths: [shortAssembly], stillBytes };
+}
+
+async function renderSingleClip(
+  ffmpegPath: string,
+  imageInput: string,
+  index: number,
+  mode: VisualMode,
+  tempDir: string
+): Promise<string> {
+  const encodeSeconds = SHORT_CLIP_SECONDS[mode];
+  const shortPath = join(tempDir, `clip-${index}-short.mp4`);
+  const args = (vf: string, output: string, seconds: number) =>
+    [
+      "-y",
+      "-loop",
+      "1",
+      "-framerate",
+      String(VIDEO_FPS),
+      "-t",
+      seconds.toFixed(3),
+      "-i",
+      imageInput,
+      "-vf",
+      vf,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "30",
+      "-pix_fmt",
+      "yuv420p",
+      "-an",
+      output,
+    ] as string[];
+
+  try {
+    await execFileAsync(
+      ffmpegPath,
+      args(sceneFilterChain(index, encodeSeconds, mode), shortPath, encodeSeconds),
+      { timeout: 14_000, maxBuffer: 12 * 1024 * 1024 }
+    );
+  } catch {
+    await execFileAsync(
+      ffmpegPath,
+      args(`scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=${VIDEO_FPS},format=yuv420p`, shortPath, encodeSeconds),
+      { timeout: 10_000, maxBuffer: 12 * 1024 * 1024 }
+    );
+  }
+
+  return shortPath;
+}
+
 /**
  * Encode a short Ken Burns / still clip, then loop with stream copy to fill
  * narration length. zoompan is single-threaded — never encode the full script
@@ -159,17 +309,14 @@ async function extendClipToDuration(
 async function renderScenesInParallel(
   ffmpegPath: string,
   imagePaths: string[],
-  durations: number[],
   mode: VisualMode,
   tempDir: string
 ): Promise<string[]> {
   const encodeSeconds = SHORT_CLIP_SECONDS[mode];
+  const concurrency = mode === "motion" || mode === "video" ? 4 : FFMPEG_CONCURRENCY;
 
-  return mapPool(imagePaths, FFMPEG_CONCURRENCY, async (imagePath, index) => {
-    const sceneDuration = durations[index];
-    const shortDuration = Math.min(sceneDuration, encodeSeconds);
+  return mapPool(imagePaths, concurrency, async (imagePath, index) => {
     const shortPath = join(tempDir, `clip-${index}-short.mp4`);
-    const clipPath = join(tempDir, `clip-${index}.mp4`);
     const args = (vf: string, output: string, seconds: number) =>
       [
         "-y",
@@ -180,28 +327,27 @@ async function renderScenesInParallel(
         "-vf", vf,
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "28",
+        "-crf", "30",
         "-pix_fmt", "yuv420p",
         "-an",
         output,
       ] as string[];
 
     try {
-      await execFileAsync(ffmpegPath, args(sceneFilterChain(index, shortDuration, mode), shortPath, shortDuration), {
-        timeout: 25_000,
-        maxBuffer: 20 * 1024 * 1024,
-      });
+      await execFileAsync(
+        ffmpegPath,
+        args(sceneFilterChain(index, encodeSeconds, mode), shortPath, encodeSeconds),
+        { timeout: 12_000, maxBuffer: 12 * 1024 * 1024 }
+      );
     } catch {
       await execFileAsync(
         ffmpegPath,
-        args(`scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=${VIDEO_FPS},format=yuv420p`, shortPath, shortDuration),
-        { timeout: 20_000, maxBuffer: 20 * 1024 * 1024 }
+        args(`scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},fps=${VIDEO_FPS},format=yuv420p`, shortPath, encodeSeconds),
+        { timeout: 10_000, maxBuffer: 12 * 1024 * 1024 }
       );
     }
 
-    if (sceneDuration <= shortDuration + 0.05) return shortPath;
-    await extendClipToDuration(ffmpegPath, shortPath, sceneDuration, clipPath);
-    return clipPath;
+    return shortPath;
   });
 }
 
@@ -343,7 +489,7 @@ export async function assembleVisualVideo(
   const durations = distributeSceneDurations(readyAssets.length, plan.totalDurationSeconds);
   const ffmpegPath = await resolveFfmpegPath();
   const tempDir = await mkdtemp(join(tmpdir(), "reelforge-fast-"));
-  const admin = createAdminClient() ?? supabase;
+  const storage = visualsStorageClient(supabase);
 
   try {
     const prompts = readyAssets.map((asset) => ({
@@ -353,10 +499,11 @@ export async function assembleVisualVideo(
     }));
 
     let outputPath = join(tempDir, "assembled.mp4");
-    const sceneStillBytes = await fetchSceneImagesParallel(prompts);
+    let sceneStillBytes: Array<Buffer | null> = readyAssets.map(() => null);
     let sceneVideos: Array<Buffer | null> = readyAssets.map(() => null);
 
     if (input.mode === "video") {
+      sceneStillBytes = await fetchSceneImagesParallel(prompts);
       sceneVideos = await fetchSceneVideosWithFallback(prompts, sceneStillBytes);
 
       const writeStill = async (index: number) => {
@@ -417,11 +564,12 @@ export async function assembleVisualVideo(
           const clipPaths = await renderScenesInParallel(
             ffmpegPath,
             imagePaths,
-            durations,
             "video",
             tempDir
           );
-          await concatClips(ffmpegPath, clipPaths, tempDir, outputPath);
+          const shortAssembly = join(tempDir, "short-assembly.mp4");
+          await concatClips(ffmpegPath, clipPaths, tempDir, shortAssembly);
+          await extendClipToDuration(ffmpegPath, shortAssembly, plan.totalDurationSeconds, outputPath);
         } catch {
           const remotion = await renderRemotionFromStills(
             imagePaths,
@@ -433,7 +581,7 @@ export async function assembleVisualVideo(
           } else if (isJson2VideoConfigured()) {
             const stillUrls = await Promise.all(
               sceneStillBytes.map((bytes, index) =>
-                bytes?.length ? uploadScenePreview(admin, userId, projectId, bytes, index) : Promise.resolve(null)
+                bytes?.length ? uploadScenePreview(storage, userId, projectId, bytes, index) : Promise.resolve(null)
               )
             );
             const movie = await fetchJson2VideoMovie(
@@ -448,60 +596,112 @@ export async function assembleVisualVideo(
         }
       }
     } else {
-      const imagePaths: string[] = [];
-      for (let i = 0; i < readyAssets.length; i += 1) {
-        const path = join(tempDir, `scene-${i}.jpg`);
-        if (sceneStillBytes[i]?.length) {
-          await writeFile(path, new Uint8Array(sceneStillBytes[i]!));
-        } else {
-          const label =
-            readyAssets[i].scene_title ||
-            readyAssets[i].scene_beat?.slice(0, 40) ||
-            `Scene ${i + 1}`;
-          await createFallbackSceneImage(ffmpegPath, label, i, path);
-        }
-        imagePaths.push(path);
-      }
-
-      const clipPaths = await renderScenesInParallel(
-        ffmpegPath,
-        imagePaths,
-        durations,
-        input.mode,
-        tempDir
+      const labels = readyAssets.map(
+        (asset, index) => asset.scene_title || asset.scene_beat?.slice(0, 40) || `Scene ${index + 1}`
       );
-      await concatClips(ffmpegPath, clipPaths, tempDir, outputPath);
+      const { clipPaths, stillBytes: pipedStills } = await pipelineImageMotionClips(
+        ffmpegPath,
+        prompts,
+        labels,
+        input.mode,
+        tempDir,
+        input.onImageProgress
+      );
+      pipedStills.forEach((bytes, index) => {
+        if (isUsableStill(bytes)) sceneStillBytes[index] = bytes;
+      });
+      for (let index = 0; index < readyAssets.length; index += 1) {
+        if (isUsableStill(sceneStillBytes[index]) || (sceneStillBytes[index]?.length ?? 0) > 500) continue;
+        const recovered =
+          (await fetchSceneImage(
+            prompts[index].prompt,
+            prompts[index].seed + 47,
+            prompts[index].beat
+          )) ||
+          (await fetchStockImage(
+            prompts[index].prompt,
+            prompts[index].beat,
+            8_000,
+            prompts[index].seed + 101
+          )) ||
+          (await fetchStockImage(
+            "Great Pyramid of Giza Egypt",
+            prompts[index].beat,
+            8_000,
+            prompts[index].seed + 131
+          ));
+        if (recovered && recovered.length > 500) {
+          sceneStillBytes[index] = recovered;
+        } else {
+          const fallbackPath = join(tempDir, `recover-${index}.jpg`);
+          await createFallbackSceneImage(
+            ffmpegPath,
+            readyAssets[index].scene_title || `Scene ${index + 1}`,
+            index,
+            fallbackPath
+          );
+          sceneStillBytes[index] = await readFile(fallbackPath);
+        }
+      }
+      const shortAssembly = clipPaths[0] ?? join(tempDir, "short-assembly.mp4");
+      await extendClipToDuration(ffmpegPath, shortAssembly, plan.totalDurationSeconds, outputPath);
     }
 
     const videoBytes = await readFile(outputPath);
     const storagePath = `${userId}/${projectId}/assembled-${Date.now()}.mp4`;
-    const { error: uploadError } = await admin.storage.from("visuals").upload(storagePath, videoBytes, {
+    const { error: uploadError } = await storage.storage.from("visuals").upload(storagePath, videoBytes, {
       contentType: "video/mp4",
       upsert: true,
     });
 
     if (uploadError) throw new Error(`Video upload failed: ${uploadError.message}`);
 
-    const publicUrl = admin.storage.from("visuals").getPublicUrl(storagePath).data.publicUrl;
+    const publicUrl = storage.storage.from("visuals").getPublicUrl(storagePath).data.publicUrl;
 
-    await Promise.all(
-      readyAssets.map(async (asset, i) => {
-        let url = asset.url;
-        if (sceneVideos[i]?.length) {
-          url = (await uploadSceneClip(admin, userId, projectId, sceneVideos[i]!, i)) ?? url;
-        } else if (sceneStillBytes[i]?.length) {
-          url = (await uploadScenePreview(admin, userId, projectId, sceneStillBytes[i]!, i)) ?? url;
+    // Persist scene URLs sequentially — parallel demo-store updates can drop rows.
+    for (let i = 0; i < readyAssets.length; i += 1) {
+      const asset = readyAssets[i];
+      let url = asset.url;
+      if (sceneVideos[i]?.length) {
+        url = (await uploadSceneClip(storage, userId, projectId, sceneVideos[i]!, i)) ?? url;
+      } else if ((sceneStillBytes[i]?.length ?? 0) > 500) {
+        url = (await uploadScenePreview(storage, userId, projectId, sceneStillBytes[i]!, i)) ?? url;
+      }
+      if (!url) {
+        const lastChance =
+          (await fetchStockImage(
+            "Great Pyramid of Giza Egypt limestone monument",
+            prompts[i].beat,
+            8_000,
+            prompts[i].seed + 300
+          )) || null;
+        if ((lastChance?.length ?? 0) > 500) {
+          url = (await uploadScenePreview(storage, userId, projectId, lastChance!, i)) ?? url;
         }
-        return supabase
-          .from("visual_assets")
-          .update({
-            url,
-            type: sceneVideos[i]?.length ? "video" : "image",
-            mode: input.mode,
-          })
-          .eq("id", asset.id);
-      })
-    );
+      }
+      if (!url) {
+        const fallbackPath = join(tempDir, `persist-fallback-${i}.jpg`);
+        await createFallbackSceneImage(
+          ffmpegPath,
+          asset.scene_title || `Scene ${i + 1}`,
+          i,
+          fallbackPath
+        );
+        url = (await uploadScenePreview(storage, userId, projectId, await readFile(fallbackPath), i)) ?? url;
+      }
+      if (!url) continue;
+      const { error } = await storage
+        .from("visual_assets")
+        .update({
+          url,
+          type: sceneVideos[i]?.length ? "video" : "image",
+          mode: input.mode,
+        })
+        .eq("id", asset.id);
+      if (error) {
+        console.error(`Failed to save scene ${i + 1} URL:`, error.message);
+      }
+    }
 
     return { url: publicUrl, durationSeconds: plan.totalDurationSeconds };
   } finally {

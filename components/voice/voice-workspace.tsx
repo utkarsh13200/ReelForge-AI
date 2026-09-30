@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ModuleHeader } from "@/components/dashboard/module-header";
 import { WorkspaceNotice } from "@/components/dashboard/workspace-notice";
+import { JobProgressCard } from "@/components/dashboard/job-progress-card";
 import { Select } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
 import { useWorkspaceProject } from "@/hooks/use-workspace-project";
 import type { Project } from "@/lib/types/project";
 import type { VoiceAsset, VoiceJobPollResponse, VoiceOption } from "@/lib/types/voice";
@@ -97,9 +97,17 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
   useEffect(() => {
     if (!job?.id || job.status === "completed" || job.status === "failed") return;
 
-    const timer = window.setInterval(async () => {
+    let cancelled = false;
+    let inFlight = false;
+    let pollErrors = 0;
+
+    const tick = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
       try {
         const latest = await pollJob(job.id);
+        if (cancelled) return;
+        pollErrors = 0;
         if (latest.status === "completed") {
           setBusy(false);
           setNotice(latest.message || "Voiceover ready.");
@@ -110,13 +118,28 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
           setNotice(latest.error || "Voice generation failed.");
         }
       } catch (error) {
-        setBusy(false);
-        setNotice(error instanceof Error ? error.message : "Job polling failed.");
+        if (cancelled) return;
+        pollErrors += 1;
+        // Transient network blips during long TTS — keep polling a few times.
+        if (pollErrors >= 5) {
+          setBusy(false);
+          setNotice(error instanceof Error ? error.message : "Job polling failed.");
+        }
+      } finally {
+        inFlight = false;
       }
-    }, 2000);
+    };
 
-    return () => window.clearInterval(timer);
-  }, [job, pollJob, project?.id, loadVoice]);
+    void tick();
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 1500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [job?.id, job?.status, pollJob, project?.id, loadVoice]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -171,10 +194,22 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
 
   async function generateVoiceover() {
     if (!project?.id) return;
+    const selected = voices.find((voice) => voice.id === voiceId);
+    if (selected?.comingSoon) {
+      setNotice(`${selected.label} is coming soon. Pick an English narrator for now.`);
+      return;
+    }
     setBusy(true);
     setNotice(null);
-    setJob(null);
     setPlaying(false);
+    setJob({
+      id: "",
+      status: "running",
+      progress: 5,
+      message: "Starting voice generation…",
+      error: null,
+      projectId: project.id,
+    });
 
     try {
       const response = await fetch(`/api/projects/${project.id}/voice/generate`, {
@@ -184,14 +219,35 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not start voice generation.");
-      const first = await pollJob(data.jobId);
+
+      const first: VoiceJobPollResponse = {
+        id: data.jobId || data.id || "",
+        status: data.status || "running",
+        progress: data.progress ?? 10,
+        message: data.message || "Synthesizing narration…",
+        error: data.error ?? null,
+        projectId: project.id,
+        voiceAsset: data.voiceAsset,
+      };
       setJob(first);
+
+      if (first.status === "completed" || data.audioUrl) {
+        setBusy(false);
+        setNotice(first.message || "Voiceover ready.");
+        await loadVoice(project.id);
+        return;
+      }
+
       if (first.status === "failed") {
         setBusy(false);
         setNotice(first.error || "Voice generation failed.");
+        return;
       }
+
+      // Keep busy=true; the poll interval advances remaining chunks.
     } catch (error) {
       setBusy(false);
+      setJob(null);
       setNotice(error instanceof Error ? error.message : "Could not generate voiceover.");
     }
   }
@@ -256,16 +312,11 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
         />
       ) : null}
 
-      {job && busy ? (
-        <Card className="border-white/10 bg-card/60">
-          <CardContent className="space-y-3 pt-6">
-            <div className="flex items-center justify-between text-sm">
-              <span>{job.message}</span>
-              <span>{job.progress}%</span>
-            </div>
-            <Progress value={job.progress} />
-          </CardContent>
-        </Card>
+      {busy ? (
+        <JobProgressCard
+          message={job?.message || "Generating voiceover…"}
+          progress={job?.progress ?? 8}
+        />
       ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -382,8 +433,9 @@ export function VoiceWorkspace({ initialProject }: { initialProject: Project | n
                 disabled={busy}
               >
                 {voices.map((voice) => (
-                  <option key={voice.id} value={voice.id}>
+                  <option key={voice.id} value={voice.id} disabled={voice.comingSoon}>
                     {voice.label} · {voice.locale}
+                    {voice.comingSoon ? " · Coming soon" : ""}
                   </option>
                 ))}
               </Select>

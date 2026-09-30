@@ -5,6 +5,7 @@ import { Clapperboard, Menu } from "lucide-react";
 import { DashboardSidebar } from "@/components/dashboard/sidebar";
 import { DashboardPipelineHeader } from "@/components/dashboard/dashboard-pipeline-header";
 import { DashboardModuleHost } from "@/components/dashboard/dashboard-module-host";
+import { VisualsTimingNote } from "@/components/visuals/visuals-timing-note";
 import { ModuleNavProvider } from "@/components/dashboard/module-nav";
 import { Button } from "@/components/ui/button";
 
@@ -59,6 +60,7 @@ export function DashboardShell({
             </div>
           </header>
           <main className="mesh-bg flex-1 overflow-auto p-4 md:p-8">
+            <VisualsTimingNote />
             <DashboardModuleHost />
             <div hidden>{children}</div>
           </main>

@@ -71,7 +71,27 @@ export const TONE_OPTIONS = [
   { value: "others", label: "Others" },
 ] as const;
 
-export const DURATION_OPTIONS = [
-  { value: "short", label: "Short (~8 min)", targetWords: 1200 },
-  { value: "long", label: "Long-form (~30 min)", targetWords: 4500 },
-] as const;
+/** ~150 spoken words per minute for YouTube narration. */
+export const WORDS_PER_MINUTE = 150;
+
+export function durationMinutesToTargetWords(minutes: number) {
+  const clamped = Math.max(1, Math.min(30, Math.round(minutes)));
+  return clamped * WORDS_PER_MINUTE;
+}
+
+export function parseDurationMinutes(duration: string | undefined) {
+  if (!duration) return 1;
+  const stripped = duration.replace(/min$/i, "").trim();
+  const parsed = Number.parseInt(stripped, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return 1;
+  return Math.min(30, parsed);
+}
+
+export const DURATION_OPTIONS = Array.from({ length: 30 }, (_, index) => {
+  const minutes = index + 1;
+  return {
+    value: String(minutes),
+    label: minutes === 1 ? "1 min" : `${minutes} min`,
+    targetWords: durationMinutesToTargetWords(minutes),
+  };
+}) as ReadonlyArray<{ value: string; label: string; targetWords: number }>;

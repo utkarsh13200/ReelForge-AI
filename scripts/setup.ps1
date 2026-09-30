@@ -31,11 +31,6 @@ if (-not (Test-Path ".env.local")) {
 
 Write-Host ""
 Write-Host "NEXT STEPS:" -ForegroundColor Green
-Write-Host "1. Edit .env.local with your Supabase + LLM keys"
-Write-Host "2. Supabase SQL Editor -> paste supabase/apply-all-migrations.sql -> Run"
-Write-Host "3. npm run dev   -> http://localhost:3001/login"
+Write-Host "1. Edit .env.local with your LLM + Visuals API keys"
+Write-Host "2. npm run dev   -> http://localhost:3001"
 Write-Host ""
-
-Remove-Item -Recurse -Force ".next" -ErrorAction SilentlyContinue
-Write-Host "Starting dev server (port 3001) and opening browser..." -ForegroundColor Green
-npm run dev

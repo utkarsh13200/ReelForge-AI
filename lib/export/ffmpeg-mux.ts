@@ -8,6 +8,8 @@ import type { TimelineJson, TimelineScene, TimelineAspectRatio } from "@/lib/typ
 import { wordsToSrt } from "@/lib/export/captions-srt";
 import { createKenBurnsVideoFromSource } from "@/lib/visuals/ken-burns-video";
 import { resolveFfmpegPath } from "@/lib/visuals/ffmpeg-path";
+import { readDemoMediaFromUrl, absolutizeAppUrl } from "@/lib/demo/media-store";
+import { ffmpegEqFromEffects } from "@/lib/timeline/effects";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,6 +54,20 @@ async function materializeUrl(url: string, destWithoutExt: string): Promise<stri
     return dest;
   }
 
+  const localMedia = readDemoMediaFromUrl(url);
+  if (localMedia?.bytes?.length) {
+    const ext = localMedia.contentType.includes("mp4")
+      ? ".mp4"
+      : localMedia.contentType.includes("png")
+        ? ".png"
+        : localMedia.contentType.includes("mpeg") || localMedia.contentType.includes("mp3")
+          ? ".mp3"
+          : ".jpg";
+    const dest = `${destWithoutExt}${ext}`;
+    await writeFile(dest, new Uint8Array(localMedia.bytes));
+    return dest;
+  }
+
   if (url.startsWith("/")) {
     const local = join(process.cwd(), "public", url.replace(/^\//, ""));
     if (existsSync(local)) {
@@ -62,7 +78,10 @@ async function materializeUrl(url: string, destWithoutExt: string): Promise<stri
     }
   }
 
-  const response = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(120_000) });
+  const response = await fetch(absolutizeAppUrl(url), {
+    cache: "no-store",
+    signal: AbortSignal.timeout(120_000),
+  });
   if (!response.ok) throw new Error(`Could not download media (${response.status}).`);
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length < 800) throw new Error("Downloaded media was empty.");
@@ -242,10 +261,14 @@ export async function muxExportWithFfmpeg(
 
     const musicVolume = Math.min(1, Math.max(0.05, timeline.music?.volume ?? 0.35));
     const duration = Math.max(1, timeline.voiceTrack.durationSeconds || timeline.totalDurationSeconds || 10);
+    const effectsFilter = ffmpegEqFromEffects(timeline.effects);
     const videoFilter = (withCaptions: boolean) => {
-      const chain = `${scaleFilter(width, height)},tpad=stop_mode=clone:stop=-1,trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS`;
+      const parts = [scaleFilter(width, height)];
+      if (effectsFilter) parts.push(effectsFilter);
+      parts.push(`tpad=stop_mode=clone:stop=-1,trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS`);
+      let chain = parts.join(",");
       if (withCaptions && captionsPath) {
-        return `${chain},subtitles='${ffmpegSubtitlesPath(captionsPath)}'`;
+        chain = `${chain},subtitles='${ffmpegSubtitlesPath(captionsPath)}'`;
       }
       return chain;
     };

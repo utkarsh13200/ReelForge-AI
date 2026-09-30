@@ -5,6 +5,7 @@ import { Download, Move } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   DEFAULT_THUMBNAIL_OVERLAY,
   type ThumbnailOverlay,
@@ -26,6 +27,17 @@ type ThumbnailCanvasEditorProps = {
 
 const DISPLAY_SCALE = 0.55;
 
+function overlayFromProps(headline: string, initialOverlay?: ThumbnailOverlay | null): ThumbnailOverlay {
+  const base = DEFAULT_THUMBNAIL_OVERLAY(headline);
+  if (!initialOverlay) return base;
+  return {
+    ...base,
+    ...initialOverlay,
+    text: initialOverlay.text || headline || base.text,
+    subtext: initialOverlay.subtext ?? "",
+  };
+}
+
 export function ThumbnailCanvasEditor({
   imageUrl,
   headline,
@@ -36,9 +48,7 @@ export function ThumbnailCanvasEditor({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const draggingRef = useRef(false);
-  const [overlay, setOverlay] = useState<ThumbnailOverlay>(
-    initialOverlay ?? DEFAULT_THUMBNAIL_OVERLAY(headline)
-  );
+  const [overlay, setOverlay] = useState<ThumbnailOverlay>(() => overlayFromProps(headline, initialOverlay));
 
   const redraw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -49,7 +59,7 @@ export function ThumbnailCanvasEditor({
   }, [overlay]);
 
   useEffect(() => {
-    const image = new Image();
+    const image = new window.Image();
     image.crossOrigin = "anonymous";
     image.onload = () => {
       imageRef.current = image;
@@ -123,7 +133,7 @@ export function ThumbnailCanvasEditor({
         </div>
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Move className="h-3.5 w-3.5" />
-          Drag on the canvas to reposition headline text.
+          Drag on the canvas to reposition the text.
         </p>
       </div>
 
@@ -133,7 +143,19 @@ export function ThumbnailCanvasEditor({
           <Input
             id="headline-text"
             value={overlay.text}
-            onChange={(event) => updateOverlay({ text: event.target.value.toUpperCase() })}
+            placeholder="Main thumbnail title"
+            onChange={(event) => updateOverlay({ text: event.target.value })}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="edit-text">Edit text</Label>
+          <Textarea
+            id="edit-text"
+            className="min-h-[96px]"
+            placeholder="Add or change extra text on the thumbnail"
+            value={overlay.subtext}
+            onChange={(event) => updateOverlay({ subtext: event.target.value })}
           />
         </div>
 

@@ -61,11 +61,13 @@ export function buildDefaultTimeline(
 
   let aspectRatio: TimelineJson["aspectRatio"] = "16:9";
   let music = null;
+  let effects = null;
   let captionStyle = DEFAULT_CAPTION_STYLE;
 
   if (isTimelineJson(existing)) {
     aspectRatio = existing.aspectRatio;
     music = existing.music;
+    effects = existing.effects ?? null;
     captionStyle = existing.captions?.style ?? DEFAULT_CAPTION_STYLE;
 
     const existingByAsset = new Map(existing.scenes.map((scene) => [scene.assetId, scene]));
@@ -100,6 +102,7 @@ export function buildDefaultTimeline(
         : null,
     scenes,
     music,
+    effects,
   };
 
   return normalizeTimeline(timeline);
@@ -142,5 +145,6 @@ export function mergeTimelineAssets(
         }
       : timeline.captions,
     scenes: mergedScenes,
+    effects: timeline.effects ?? null,
   });
 }

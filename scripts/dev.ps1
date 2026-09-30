@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $Drive = "Y:"
 $Port = 3001
-$AppUrl = "http://localhost:$Port/login"
+$AppUrl = "http://localhost:$Port"
 
 function Ensure-SubstDrive {
   if (-not (Test-Path "${Drive}\")) {

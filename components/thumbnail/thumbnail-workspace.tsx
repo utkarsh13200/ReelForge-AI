@@ -52,24 +52,32 @@ export function ThumbnailWorkspace({ initialProject }: { initialProject: Project
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Could not load thumbnails.");
     setProject(data.project);
-    setThumbnails(data.thumbnails ?? []);
-    if (data.selectedThumbnail) {
-      setSelectedId(data.selectedThumbnail.id);
-      setHeadline(data.selectedThumbnail.headline || data.selectedThumbnail.overlay_json?.text || "");
-    } else if (data.thumbnails?.length) {
-      setSelectedId(data.thumbnails[0].id);
-      setHeadline(data.thumbnails[0].headline || "");
-    }
+    const rows = (data.thumbnails ?? []) as Thumbnail[];
+    setThumbnails(rows);
+    setSelectedId((current) => {
+      if (current && rows.some((row) => row.id === current)) return current;
+      return data.selectedThumbnail?.id ?? rows[0]?.id ?? null;
+    });
+    setHeadline((current) => {
+      if (current.trim()) return current;
+      return (
+        data.selectedThumbnail?.headline ||
+        data.selectedThumbnail?.overlay_json?.text ||
+        rows[0]?.headline ||
+        ""
+      );
+    });
   }, [setProject]);
 
   useEffect(() => {
-    if (project?.id) {
-      loadThumbnails(project.id).catch((error) => {
-        setNoticeVariant("error");
-        setNotice(error instanceof Error ? error.message : "Could not load thumbnails.");
-      });
-    }
-  }, [project?.id, activeProjectId, loadThumbnails]);
+    if (!project?.id) return;
+    loadThumbnails(project.id).catch((error) => {
+      setNoticeVariant("error");
+      setNotice(error instanceof Error ? error.message : "Could not load thumbnails.");
+    });
+    // Reload only when the project changes. Including loadThumbnails would reset the selected image every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id, activeProjectId]);
 
   useEffect(() => {
     setUseProjectVideo(Boolean(project?.visual_video_url));
@@ -325,9 +333,11 @@ export function ThumbnailWorkspace({ initialProject }: { initialProject: Project
                 <button
                   key={thumbnail.id}
                   type="button"
-                  onClick={() => {
+                  aria-pressed={selectedId === thumbnail.id}
+                  onClick={(event) => {
+                    event.preventDefault();
                     setSelectedId(thumbnail.id);
-                    setHeadline(thumbnail.headline || headline);
+                    setHeadline(thumbnail.headline || thumbnail.overlay_json?.text || headline);
                   }}
                   className={`overflow-hidden rounded-xl border text-left transition ${
                     selectedId === thumbnail.id
@@ -341,7 +351,8 @@ export function ThumbnailWorkspace({ initialProject }: { initialProject: Project
                         src={thumbnail.url}
                         alt={`Candidate ${index + 1}`}
                         fill
-                        className="object-cover"
+                        draggable={false}
+                        className="pointer-events-none object-cover"
                         unoptimized
                       />
                     ) : (
@@ -380,6 +391,7 @@ export function ThumbnailWorkspace({ initialProject }: { initialProject: Project
           </CardHeader>
           <CardContent>
             <ThumbnailCanvasEditor
+              key={selectedThumbnail.id}
               imageUrl={selectedThumbnail.url}
               headline={headline || headlineInput || project?.title || "WATCH THIS"}
               initialOverlay={selectedThumbnail.overlay_json}

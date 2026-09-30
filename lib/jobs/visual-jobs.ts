@@ -7,6 +7,7 @@ import type {
   VisualSplitJobPayload,
   JobPollResponse,
 } from "@/lib/types/visual";
+import type { ImageGenProgressEvent } from "@/lib/providers/fast-image-gen";
 import { splitScriptIntoScenes } from "@/lib/visuals/scene-split";
 import { persistSceneMedia } from "@/lib/visuals/persist-image";
 import { assembleVisualVideo } from "@/lib/visuals/assemble-video";
@@ -76,7 +77,7 @@ async function runVisualJobStepOnce(
       progress = 100;
       status = "completed";
     } else if (payload.kind === "visual_generate") {
-      const result = await runGenerateStep(supabase, payload, userId);
+      const result = await runGenerateStep(supabase, payload, userId, job.id);
       nextPayload = result.payload;
       progress = result.progress;
       status = result.status;
@@ -175,7 +176,8 @@ async function runSplitJob(
 async function runAssembleStep(
   supabase: SupabaseClient,
   payload: VisualGenerateJobPayload,
-  userId: string
+  userId: string,
+  jobId?: string
 ) {
   const { data: project } = await supabase
     .from("projects")
@@ -197,10 +199,36 @@ async function runAssembleStep(
 
   if (assetsError) throw new Error(assetsError.message);
 
+  const onImageProgress = jobId
+    ? async (event: ImageGenProgressEvent) => {
+        const done = event.index + 1;
+        const progress = Math.min(85, 12 + Math.round((done / event.total) * 68));
+        const label =
+          event.status === "cached"
+            ? "loaded from cache"
+            : event.status === "done"
+              ? `via ${event.provider ?? "AI"}`
+              : "retrying…";
+        await supabase
+          .from("job_queue")
+          .update({
+            progress,
+            payload: {
+              ...payload,
+              phase: "assemble" as const,
+              message: `Scene ${done}/${event.total} ${label}…`,
+            },
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", jobId);
+      }
+    : undefined;
+
   const assembled = await assembleVisualVideo(supabase, userId, payload.projectId, {
     assets: assets ?? [],
     script,
     mode: payload.mode,
+    onImageProgress,
   });
 
   const { error: projectUpdateError } = await supabase
@@ -212,11 +240,6 @@ async function runAssembleStep(
     })
     .eq("id", payload.projectId);
 
-  if (projectUpdateError?.message?.includes("visual_video_url")) {
-    throw new Error(
-      "Video assembled but could not save to project. Run migration 004 in Supabase SQL Editor (see supabase/migrations/004_visual_video.sql)."
-    );
-  }
   if (projectUpdateError) throw new Error(projectUpdateError.message);
 
   return {
@@ -233,7 +256,8 @@ async function runAssembleStep(
 async function runGenerateStep(
   supabase: SupabaseClient,
   payload: VisualGenerateJobPayload,
-  userId: string
+  userId: string,
+  jobId: string
 ) {
   if (payload.fromScript) {
     await runSplitJob(
@@ -249,7 +273,7 @@ async function runGenerateStep(
     );
   }
 
-  return runAssembleStep(supabase, { ...payload, phase: "assemble" }, userId);
+  return runAssembleStep(supabase, { ...payload, phase: "assemble" }, userId, jobId);
 }
 
 async function runRegenerateStep(

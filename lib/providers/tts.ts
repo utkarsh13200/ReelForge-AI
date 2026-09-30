@@ -68,18 +68,50 @@ const EDGE_ALIASES: Record<string, string> = {
   "hi-IN-MadhurNeural": "en-US-GuyNeural",
 };
 
+const COMING_SOON_VOICES: VoiceOption[] = [
+  {
+    id: "hi-IN-coming-soon",
+    label: "Hindi narrator",
+    locale: "hi-IN",
+    gender: "Female",
+    comingSoon: true,
+  },
+  {
+    id: "bn-IN-coming-soon",
+    label: "Bengali narrator",
+    locale: "bn-IN",
+    gender: "Female",
+    comingSoon: true,
+  },
+  {
+    id: "mr-IN-coming-soon",
+    label: "Marathi narrator",
+    locale: "mr-IN",
+    gender: "Female",
+    comingSoon: true,
+  },
+];
+
 function resolveVoice(voiceId: string) {
+  if (COMING_SOON_VOICES.some((voice) => voice.id === voiceId)) {
+    throw new Error("This language is coming soon. Pick an English narrator for now.");
+  }
   const mapped = EDGE_ALIASES[voiceId] || voiceId;
   return VOICES.find((voice) => voice.id === mapped) ?? VOICES[0];
 }
 
+export function isComingSoonVoice(voiceId: string) {
+  return COMING_SOON_VOICES.some((voice) => voice.id === voiceId);
+}
+
 export function listTtsVoices(): VoiceOption[] {
-  return VOICES.filter((voice) => voice.id.includes("Neural")).map(({ id, label, locale, gender }) => ({
+  const active = VOICES.filter((voice) => voice.id.includes("Neural")).map(({ id, label, locale, gender }) => ({
     id,
     label,
     locale,
     gender,
   }));
+  return [...active, ...COMING_SOON_VOICES];
 }
 
 function ticksToSeconds(value: number) {
@@ -147,21 +179,33 @@ async function synthesizeWithSapi(
 
   try {
     await writeFile(textPath, text, "utf8");
-
+    const scriptPath = join(tempDir, "speak.ps1");
     const ps = `
 Add-Type -AssemblyName System.Speech
 $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-try { $synth.SelectVoice(${JSON.stringify(sapiName)}) } catch {}
+$wanted = ${JSON.stringify(sapiName)}
+$installed = @($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name })
+if ($installed -contains $wanted) {
+  $synth.SelectVoice($wanted)
+} elseif ($installed.Count -gt 0) {
+  $english = $installed | Where-Object { $_ -match 'Zira|David|Hazel|Mark|Jenny' } | Select-Object -First 1
+  if ($english) { $synth.SelectVoice($english) } else { $synth.SelectVoice($installed[0]) }
+}
 $synth.SetOutputToWaveFile(${JSON.stringify(wavPath)})
-$synth.Speak([IO.File]::ReadAllText(${JSON.stringify(textPath)}))
+$synth.Speak([IO.File]::ReadAllText(${JSON.stringify(textPath)}, [Text.Encoding]::UTF8))
 $synth.Dispose()
 `;
+    await writeFile(scriptPath, ps, "utf8");
 
-    await execFileAsync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
-      timeout: 180_000,
-      windowsHide: true,
-      maxBuffer: 20 * 1024 * 1024,
-    });
+    await execFileAsync(
+      "powershell",
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+      {
+        timeout: 45_000,
+        windowsHide: true,
+        maxBuffer: 20 * 1024 * 1024,
+      }
+    );
 
     const wav = await readFile(wavPath);
     if (wav.length < 1000) throw new Error("Windows SAPI produced an empty voice file.");
@@ -199,6 +243,10 @@ async function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
   }
 }
 
+function ttsProvider() {
+  return (process.env.TTS_PROVIDER || "sapi").trim().toLowerCase();
+}
+
 export async function synthesizeSpeech(
   text: string,
   voiceId: string,
@@ -208,18 +256,53 @@ export async function synthesizeSpeech(
   const clipped = text.trim();
   if (!clipped) throw new Error("Nothing to narrate — the script chunk is empty.");
 
-  if (process.platform === "win32") {
+  const fromSapi = async () => {
+    const { audio, durationSeconds } = await synthesizeWithSapi(clipped, voice.sapiName);
+    if (audio.length < 500) throw new Error("Windows SAPI returned empty audio.");
+    return {
+      audio,
+      subtitles: estimateWordTimestamps(clipped, durationSeconds, timeOffsetSeconds),
+      chunkDurationSeconds: durationSeconds,
+    };
+  };
+  const fromEdge = () => {
+    // Fail over quickly — hung Edge streams were freezing Module 03 at mid-progress.
+    const timeoutMs = Math.min(15_000, Math.max(8_000, 6_000 + clipped.length * 20));
+    return withTimeout(synthesizeWithEdge(clipped, voice.edgeName, timeOffsetSeconds), timeoutMs);
+  };
+
+  const provider = ttsProvider();
+  // On Windows, SAPI is the reliable default. Edge is optional / fallback.
+  const preferSapi =
+    process.platform === "win32" && (provider === "sapi" || provider === "auto" || !provider);
+  const errors: string[] = [];
+
+  if (preferSapi) {
     try {
-      const { audio, durationSeconds } = await synthesizeWithSapi(clipped, voice.sapiName);
-      return {
-        audio,
-        subtitles: estimateWordTimestamps(clipped, durationSeconds, timeOffsetSeconds),
-        chunkDurationSeconds: durationSeconds,
-      };
-    } catch {
-      return withTimeout(synthesizeWithEdge(clipped, voice.edgeName, timeOffsetSeconds), 20_000);
+      return await fromSapi();
+    } catch (caught) {
+      errors.push(`SAPI: ${caught instanceof Error ? caught.message : String(caught)}`);
     }
+    try {
+      return await fromEdge();
+    } catch (caught) {
+      errors.push(`Edge TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
+    }
+    throw new Error(errors.join(" ") || "Voice generation failed.");
   }
 
-  return withTimeout(synthesizeWithEdge(clipped, voice.edgeName, timeOffsetSeconds), 25_000);
+  // TTS_PROVIDER=edge-tts: try Edge first, then Windows SAPI.
+  try {
+    return await fromEdge();
+  } catch (caught) {
+    errors.push(`Edge TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
+  }
+  if (process.platform === "win32") {
+    try {
+      return await fromSapi();
+    } catch (caught) {
+      errors.push(`SAPI: ${caught instanceof Error ? caught.message : String(caught)}`);
+    }
+  }
+  throw new Error(errors.join(" ") || "Voice generation failed.");
 }
