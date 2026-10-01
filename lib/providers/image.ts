@@ -1,6 +1,12 @@
 import { fetchStockImage } from "@/lib/providers/stock-image";
 import { fetchHuggingFaceImage, isHuggingFaceConfigured } from "@/lib/providers/huggingface";
 import { isProviderOpen } from "@/lib/providers/circuit";
+import { fetchAiHordeImage, isAiHordeEnabled } from "@/lib/providers/ai-horde";
+import {
+  fetchCloudflareAiImage,
+  isCloudflareAiConfigured,
+} from "@/lib/providers/cloudflare-ai";
+import { fetchPuterImage, isPuterConfigured } from "@/lib/providers/puter-image";
 import {
   fetchGeminiImage,
   getGeminiImageConfig,
@@ -198,11 +204,26 @@ export async function fetchSceneImage(
     if (gemini) return gemini;
   }
 
+  if (isCloudflareAiConfigured()) {
+    const cloudflare = await fetchCloudflareAiImage(prompt, 18_000, seed);
+    if (cloudflare) return cloudflare;
+  }
+
+  if (isPuterConfigured()) {
+    const puter = await fetchPuterImage(prompt, 22_000, seed);
+    if (puter) return puter;
+  }
+
   const huggingface = await fetchHuggingFaceImage(prompt, 8_000);
   if (huggingface) return huggingface;
 
   const generated = await fetchPollinationsImage(prompt, seed, IMAGE_FETCH_TIMEOUT_MS);
   if (generated) return generated;
+
+  if (isAiHordeEnabled()) {
+    const horde = await fetchAiHordeImage(prompt, 16_000, seed);
+    if (horde) return horde;
+  }
 
   return fetchStockImage(prompt, beat, 6_000, seed);
 }
@@ -213,29 +234,58 @@ export type SceneImageRequest = {
   beat?: string | null;
 };
 
-/** Hugging Face in parallel; Pollinations sequential backup overlaps HF wait per scene. */
+/** Cloudflare / Puter / HF / Horde in parallel; Pollinations sequential backup. */
 export async function fetchSceneImagesParallel(
   items: SceneImageRequest[]
 ): Promise<Array<Buffer | null>> {
   const stills: Array<Buffer | null> = items.map(() => null);
   const hfReady = isHuggingFaceConfigured() && isProviderOpen("hf");
+  const hordeReady = isAiHordeEnabled();
+  const cloudflareReady = isCloudflareAiConfigured();
+  const puterReady = isPuterConfigured();
 
-  const hfJobs = items.map((item, index) =>
-    (async () => {
-      if (!hfReady) return;
-      const bytes = await fetchHuggingFaceImage(item.prompt, HF_PARALLEL_TIMEOUT_MS);
-      if (bytes?.length) stills[index] = bytes;
-    })()
-  );
+  const parallelJobs = items.flatMap((item, index) => {
+    const jobs: Array<Promise<void>> = [];
+    if (cloudflareReady) {
+      jobs.push(
+        (async () => {
+          const bytes = await fetchCloudflareAiImage(item.prompt, 16_000, item.seed);
+          if (bytes?.length && !stills[index]?.length) stills[index] = bytes;
+        })()
+      );
+    }
+    if (puterReady) {
+      jobs.push(
+        (async () => {
+          const bytes = await fetchPuterImage(item.prompt, 20_000, item.seed);
+          if (bytes?.length && !stills[index]?.length) stills[index] = bytes;
+        })()
+      );
+    }
+    if (hfReady) {
+      jobs.push(
+        (async () => {
+          const bytes = await fetchHuggingFaceImage(item.prompt, HF_PARALLEL_TIMEOUT_MS);
+          if (bytes?.length && !stills[index]?.length) stills[index] = bytes;
+        })()
+      );
+    }
+    if (hordeReady) {
+      jobs.push(
+        (async () => {
+          const bytes = await fetchAiHordeImage(item.prompt, 14_000, item.seed);
+          if (bytes?.length && !stills[index]?.length) stills[index] = bytes;
+        })()
+      );
+    }
+    return jobs;
+  });
 
   const pollJob = (async () => {
     for (let index = 0; index < items.length; index += 1) {
       if (stills[index]?.length) continue;
       const item = items[index];
-
-      if (hfReady) {
-        await Promise.race([hfJobs[index], sleep(150)]);
-      }
+      await sleep(150);
       if (stills[index]?.length) continue;
 
       stills[index] =
@@ -244,12 +294,8 @@ export async function fetchSceneImagesParallel(
     }
   })();
 
-  await Promise.all([...hfJobs, pollJob]);
+  await Promise.all([...parallelJobs, pollJob]);
   return stills;
 }
 
-export function describeImageProvider() {
-  const gemini = getGeminiImageStatus();
-  if (gemini.available && gemini.model) return `Gemini (${gemini.model}) → Pollinations`;
-  return "Pollinations (Gemini/HF used only when their image quota is active)";
-}
+export { describeImageProvider } from "@/lib/providers/image-describe";

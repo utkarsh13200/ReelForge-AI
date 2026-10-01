@@ -7,6 +7,7 @@ const nextConfig = {
       "esbuild",
       "ffmpeg-static",
       "@travisvn/edge-tts",
+      "@heyputer/puter.js",
       "ws",
     ],
   },

@@ -1,6 +1,6 @@
 import type { VisualMode } from "@/lib/types/visual";
 import { computeScenePlan } from "@/lib/visuals/scene-count";
-import { describeImageProvider } from "@/lib/providers/image";
+import { describeImageProvider } from "@/lib/providers/image-describe";
 
 export function resolveMotionRenderMode(mode: VisualMode) {
   if (mode === "video") return "video_clip";

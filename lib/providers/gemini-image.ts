@@ -28,8 +28,25 @@ const COOLDOWN_MS = Number(process.env.GEMINI_COOLDOWN_MS) || 10 * 60_000;
 let cooldownUntil = 0;
 let lastError: string | null = null;
 
+/** All configured Gemini keys (primary + GEMINI_API_KEY_2 / comma list). */
+export function listGeminiApiKeys(): string[] {
+  const fromList = (process.env.GEMINI_API_KEYS || "")
+    .split(/[,;\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const singles = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GOOGLE_API_KEY,
+  ]
+    .map((item) => item?.trim() || "")
+    .filter(Boolean);
+  return [...new Set([...singles, ...fromList])];
+}
+
 export function getGeminiImageConfig(): GeminiImageConfig | null {
-  const apiKey = process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim() || "";
+  const apiKey = listGeminiApiKeys()[0] || "";
   if (!apiKey) return null;
 
   const model = process.env.GEMINI_IMAGE_MODEL?.trim() || DEFAULT_MODELS[0];
@@ -111,7 +128,8 @@ export async function fetchGeminiImage(
   timeoutMs = Number(process.env.IMAGE_FETCH_TIMEOUT_MS) || 18_000
 ): Promise<Buffer | null> {
   const config = getGeminiImageConfig();
-  if (!config) return null;
+  const apiKeys = listGeminiApiKeys();
+  if (!config || !apiKeys.length) return null;
   if (Date.now() < cooldownUntil) return null;
 
   const models = [config.model, ...DEFAULT_MODELS.filter((item) => item !== config.model)];
@@ -124,45 +142,48 @@ export async function fetchGeminiImage(
   };
 
   let failure: string | null = null;
+  let hardFailures = 0;
 
-  for (const model of models) {
-    if (Date.now() < cooldownUntil) return null;
-    try {
-      const url = `${config.baseUrl}/models/${model}:generateContent?key=${encodeURIComponent(config.apiKey)}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        cache: "no-store",
-        signal: AbortSignal.timeout(timeoutMs),
-      });
+  for (const apiKey of apiKeys) {
+    for (const model of models) {
+      if (Date.now() < cooldownUntil) return null;
+      try {
+        const url = `${config.baseUrl}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          cache: "no-store",
+          signal: AbortSignal.timeout(timeoutMs),
+        });
 
-      if (!response.ok) {
-        const text = await response.text();
-        failure = describeApiError(response.status, text);
-        if (response.status === 429 || (response.status === 403 && /key|permission/i.test(text))) {
-          lastError = failure;
-          cooldownUntil = Date.now() + COOLDOWN_MS;
-          return null;
+        if (!response.ok) {
+          const text = await response.text();
+          failure = describeApiError(response.status, text);
+          if (response.status === 429 || (response.status === 403 && /key|permission/i.test(text))) {
+            hardFailures += 1;
+            // Try the next API key before parking the whole provider.
+            break;
+          }
+          continue;
         }
-        continue;
-      }
 
-      const bytes = extractImageBytes(await response.json());
-      if (bytes) {
-        lastError = null;
-        cooldownUntil = 0;
-        return bytes;
+        const bytes = extractImageBytes(await response.json());
+        if (bytes) {
+          lastError = null;
+          cooldownUntil = 0;
+          return bytes;
+        }
+        failure = `Gemini model ${model} returned no image data.`;
+      } catch (caught) {
+        failure = caught instanceof Error ? caught.message : `Gemini request to ${model} failed.`;
       }
-      failure = `Gemini model ${model} returned no image data.`;
-    } catch (caught) {
-      failure = caught instanceof Error ? caught.message : `Gemini request to ${model} failed.`;
     }
   }
 
   lastError = failure;
-  // Only park Gemini on permanent quota/key errors — not timeouts or empty responses.
-  if (failure && (/limit: 0|rejected the API key|403/.test(failure))) {
+  // Park only when every key hit quota/auth errors.
+  if (hardFailures >= apiKeys.length || (failure && /limit: 0|rejected the API key/.test(failure || ""))) {
     cooldownUntil = Date.now() + COOLDOWN_MS;
   }
   return null;
