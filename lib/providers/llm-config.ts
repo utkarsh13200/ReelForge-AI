@@ -18,16 +18,27 @@ export function getLlmConfig() {
 
   const onGroq = apiKey.startsWith("gsk_") || baseUrl.includes("groq.com");
 
-  /** Groq retired llama-3.3-70b-versatile on this account — these still work. */
+  /**
+   * Prefer non-reasoning chat models first — gpt-oss often returns empty `content`
+   * after spending the token budget on hidden reasoning.
+   */
   const groqFallbacks = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
     "openai/gpt-oss-20b",
-    "qwen/qwen3.6-27b",
-    "openai/gpt-oss-120b",
     "groq/compound-mini",
   ];
 
-  if (!model || (onGroq && (model.startsWith("gpt-") || model.startsWith("llama-")))) {
+  // OpenAI-style model ids (gpt-4o-mini) do not work on Groq.
+  if (!model || (onGroq && /^gpt-/.test(model))) {
     model = onGroq ? groqFallbacks[0] : "gpt-4o-mini";
+  }
+
+  // Old .env.example default — gpt-oss often returns empty content on short budgets.
+  if (onGroq && /gpt-oss/i.test(model)) {
+    model = groqFallbacks[0];
   }
 
   return {
