@@ -491,6 +491,14 @@ export async function assembleVisualVideo(
   const tempDir = await mkdtemp(join(tmpdir(), "reelforge-fast-"));
   const storage = visualsStorageClient(supabase);
 
+  let ffmpegWorks = false;
+  try {
+    await execFileAsync(ffmpegPath, ["-version"], { timeout: 5_000 });
+    ffmpegWorks = true;
+  } catch {
+    ffmpegWorks = false;
+  }
+
   try {
     const prompts = readyAssets.map((asset) => ({
       prompt: sceneImagePrompt(asset),
@@ -501,6 +509,32 @@ export async function assembleVisualVideo(
     let outputPath = join(tempDir, "assembled.mp4");
     let sceneStillBytes: Array<Buffer | null> = readyAssets.map(() => null);
     let sceneVideos: Array<Buffer | null> = readyAssets.map(() => null);
+
+    // Serverless without ffmpeg: still generate + persist AI stills so Visuals isn't empty.
+    if (!ffmpegWorks && (input.mode === "image" || input.mode === "motion")) {
+      sceneStillBytes = await fetchSceneStillsFast(prompts, {
+        onProgress: input.onImageProgress,
+      });
+      let firstUrl: string | null = null;
+      for (let i = 0; i < readyAssets.length; i += 1) {
+        const bytes = sceneStillBytes[i];
+        if (!bytes?.length) continue;
+        const url = await uploadScenePreview(storage, userId, projectId, bytes, i);
+        if (!url) continue;
+        if (!firstUrl) firstUrl = url;
+        await storage
+          .from("visual_assets")
+          .update({ url, type: "image", mode: input.mode })
+          .eq("id", readyAssets[i].id);
+      }
+      if (!firstUrl) {
+        throw new Error("spawn ffmpeg ENOENT — and no AI stills could be saved.");
+      }
+      // Stills are persisted; fail assemble so soft-complete can succeed without a fake MP4 URL.
+      throw new Error(
+        `spawn ffmpeg ENOENT — saved scene stills; MP4 assembly unavailable on this host.`
+      );
+    }
 
     if (input.mode === "video") {
       sceneStillBytes = await fetchSceneImagesParallel(prompts);

@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import { createTopicJobPayload } from "@/lib/script/topic-job";
+import { jobResponse, processScriptJobStep } from "@/lib/jobs/script-jobs";
 import { parseDurationMinutes, durationMinutesToTargetWords } from "@/lib/types/project";
+import type { JobRecord } from "@/lib/types/project";
+import { preferSyncJobs } from "@/lib/runtime/platform";
 
 type Params = { params: { id: string } };
+
+export const maxDuration = 120;
 
 export async function POST(request: Request, { params }: Params) {
   const auth = await requireApiUser();
@@ -70,6 +75,18 @@ export async function POST(request: Request, { params }: Params) {
     .select("*")
     .single();
 
-  if (jobError) return NextResponse.json({ error: jobError.message }, { status: 500 });
+  if (jobError || !job) return NextResponse.json({ error: jobError?.message || "Could not queue job." }, { status: 500 });
+
+  // On Vercel, polls often hit another instance without the in-memory job — finish here.
+  if (preferSyncJobs()) {
+    const processed = await processScriptJobStep(supabase, { ...job, status: "running" } as JobRecord);
+    await finalizeDemoApi();
+    return NextResponse.json({
+      ...jobResponse(processed),
+      jobId: processed.id,
+    });
+  }
+
+  await finalizeDemoApi();
   return NextResponse.json({ jobId: job.id });
 }

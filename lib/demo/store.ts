@@ -12,7 +12,9 @@ import {
   hydrateDemoStore,
   loadPersistedDemoStore,
   schedulePersistDemoStore,
+  serializeDemoStore,
 } from "@/lib/demo/persistence";
+import { loadRemoteDemoStore, shouldUseRemoteDemoStore } from "@/lib/demo/remote-store";
 
 export type DemoStore = {
   projects: Map<string, Project>;
@@ -28,6 +30,8 @@ declare global {
   var __reelforgeDemoStore: DemoStore | undefined;
   // eslint-disable-next-line no-var
   var __reelforgeDemoHydrated: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var __reelforgeDemoRemoteReady: Promise<void> | undefined;
 }
 
 function store(): DemoStore {
@@ -70,9 +74,27 @@ export function getDemoStoreSnapshot(): DemoStore {
   return store();
 }
 
+/** Pull durable demo state from Blob/Upstash before handling an API request. */
+export async function ensureDemoStoreReady() {
+  store();
+  if (!shouldUseRemoteDemoStore()) return;
+  try {
+    const remote = await loadRemoteDemoStore();
+    if (remote?.projects?.length) {
+      hydrateDemoStore(store(), remote);
+    }
+  } catch {
+    // Keep local/in-memory seed if remote is unavailable.
+  }
+}
+
 export function mutateDemoStore(mutator: (state: DemoStore) => void) {
   mutator(store());
   persistSoon();
+}
+
+export function exportDemoStoreJson() {
+  return serializeDemoStore(store());
 }
 
 export function getDemoExportJobs(projectId: string) {

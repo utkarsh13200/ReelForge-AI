@@ -440,7 +440,18 @@ function demoStorageBucket(bucket: string) {
   return {
     upload: async (path: string, file: Buffer | Uint8Array, opts?: { contentType?: string }) => {
       const bytes = Buffer.isBuffer(file) ? file : Buffer.from(file);
-      putDemoMedia(bucket, path, bytes, opts?.contentType ?? "application/octet-stream");
+      const contentType = opts?.contentType ?? "application/octet-stream";
+      putDemoMedia(bucket, path, bytes, contentType);
+      try {
+        const { uploadRemoteMedia } = await import("@/lib/demo/remote-store");
+        const remoteUrl = await uploadRemoteMedia(bucket, path, bytes, contentType);
+        if (remoteUrl) {
+          const { setDemoMediaRemoteUrl } = await import("@/lib/demo/media-store");
+          setDemoMediaRemoteUrl(bucket, path, remoteUrl);
+        }
+      } catch {
+        // data URLs / local paths still work for this request
+      }
       return { data: { path }, error: null };
     },
     getPublicUrl: (path: string) => ({

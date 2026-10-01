@@ -6,8 +6,10 @@ import type { Thumbnail } from "@/lib/types/thumbnail";
 import type { VisualAsset } from "@/lib/types/visual";
 import type { VoiceAsset } from "@/lib/types/voice";
 import type { DemoStore } from "@/lib/demo/store";
+import { demoDataRoot, isServerlessRuntime } from "@/lib/runtime/platform";
+import { saveRemoteDemoStore, shouldUseRemoteDemoStore } from "@/lib/demo/remote-store";
 
-export const DEMO_DATA_DIR = join(process.cwd(), ".data", "demo");
+export const DEMO_DATA_DIR = demoDataRoot();
 export const DEMO_STORE_FILE = join(DEMO_DATA_DIR, "store.json");
 
 export type SerializedDemoStore = {
@@ -79,20 +81,46 @@ export function loadPersistedDemoStore(): SerializedDemoStore | null {
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let remotePersistChain: Promise<void> = Promise.resolve();
+
+function writeLocalStore(state: DemoStore) {
+  ensureDemoDir();
+  const payload = serializeDemoStore(state);
+  writeFileSync(DEMO_STORE_FILE, JSON.stringify(payload, null, 2), "utf8");
+  return payload;
+}
+
+export function flushPersistDemoStore(state: DemoStore) {
+  if (typeof window !== "undefined") return;
+  try {
+    const payload = writeLocalStore(state);
+    if (shouldUseRemoteDemoStore()) {
+      remotePersistChain = remotePersistChain
+        .then(() => saveRemoteDemoStore(payload))
+        .catch(() => undefined);
+    }
+  } catch {
+    // Best-effort persistence for local demo sessions.
+  }
+}
 
 export function schedulePersistDemoStore(state: DemoStore) {
   if (typeof window !== "undefined") return;
+  // Serverless requests end quickly — debounce would drop writes before flush.
+  if (isServerlessRuntime()) {
+    flushPersistDemoStore(state);
+    return;
+  }
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     persistTimer = null;
-    try {
-      ensureDemoDir();
-      const payload = serializeDemoStore(state);
-      writeFileSync(DEMO_STORE_FILE, JSON.stringify(payload, null, 2), "utf8");
-    } catch {
-      // Best-effort persistence for local demo sessions.
-    }
+    flushPersistDemoStore(state);
   }, 400);
+}
+
+/** Await remote flush (call at end of API handlers on Vercel). */
+export async function awaitRemoteDemoPersist() {
+  await remotePersistChain;
 }
 
 export function demoMediaFilePath(bucket: string, path: string) {

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import {
   continueVoiceJobInBackground,
   createVoiceGeneratePayload,
@@ -7,6 +7,7 @@ import {
   voiceJobResponse,
 } from "@/lib/jobs/voice-jobs";
 import { isComingSoonVoice } from "@/lib/providers/tts";
+import { preferSyncJobs } from "@/lib/runtime/platform";
 import type { JobRecord } from "@/lib/types/project";
 import type { VoiceGenerateJobPayload } from "@/lib/types/voice";
 
@@ -75,22 +76,32 @@ export async function POST(request: Request, { params }: Params) {
     return NextResponse.json({ error: jobError?.message || "Could not queue voice job." }, { status: 500 });
   }
 
-  // Run the first chunk now so the UI gets immediate progress, then finish the rest
-  // in the background so later polls stay fast (no long-blocking GET).
-  const processed = await processVoiceJobStep(supabase, { ...job, status: "running" } as JobRecord, userId);
+  // On serverless, background runners die when the response ends — finish in-request.
+  let processed = await processVoiceJobStep(
+    supabase,
+    { ...job, status: "running" } as JobRecord,
+    userId
+  );
   if (processed.status === "failed") {
+    await finalizeDemoApi();
     return NextResponse.json(
       { error: processed.error || "Voice generation failed.", jobId: processed.id },
       { status: 502 }
     );
   }
 
-  if (processed.status === "running") {
+  if (preferSyncJobs()) {
+    while (processed.status === "queued" || processed.status === "running") {
+      processed = await processVoiceJobStep(supabase, processed, userId);
+      if (processed.status === "completed" || processed.status === "failed") break;
+    }
+  } else if (processed.status === "running") {
     continueVoiceJobInBackground(supabase, processed, userId);
   }
 
   const response = voiceJobResponse(processed);
   const processedPayload = processed.payload as VoiceGenerateJobPayload;
+  await finalizeDemoApi();
   return NextResponse.json({
     ...response,
     jobId: processed.id,

@@ -10,6 +10,11 @@ const nextConfig = {
       "@heyputer/puter.js",
       "ws",
     ],
+    // Ensure the ffmpeg binary is packaged into Vercel serverless functions.
+    outputFileTracingIncludes: {
+      "/api/**/*": ["./node_modules/ffmpeg-static/**/*"],
+      "/*": ["./node_modules/ffmpeg-static/**/*"],
+    },
   },
 };
 

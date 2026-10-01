@@ -224,33 +224,57 @@ async function runAssembleStep(
       }
     : undefined;
 
-  const assembled = await assembleVisualVideo(supabase, userId, payload.projectId, {
-    assets: assets ?? [],
-    script,
-    mode: payload.mode,
-    onImageProgress,
-  });
+  try {
+    const assembled = await assembleVisualVideo(supabase, userId, payload.projectId, {
+      assets: assets ?? [],
+      script,
+      mode: payload.mode,
+      onImageProgress,
+    });
 
-  const { error: projectUpdateError } = await supabase
-    .from("projects")
-    .update({
-      visual_video_url: assembled.url,
-      visual_video_duration_seconds: assembled.durationSeconds,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", payload.projectId);
+    const { error: projectUpdateError } = await supabase
+      .from("projects")
+      .update({
+        visual_video_url: assembled.url,
+        visual_video_duration_seconds: assembled.durationSeconds,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", payload.projectId);
 
-  if (projectUpdateError) throw new Error(projectUpdateError.message);
+    if (projectUpdateError) throw new Error(projectUpdateError.message);
 
-  return {
-    payload: {
-      ...payload,
-      phase: "assemble" as const,
-      message: `Video ready — ${Math.round(assembled.durationSeconds)}s silent preview assembled from your script.`,
-    } satisfies VisualGenerateJobPayload,
-    progress: 100,
-    status: "completed" as const,
-  };
+    return {
+      payload: {
+        ...payload,
+        phase: "assemble" as const,
+        message: `Video ready — ${Math.round(assembled.durationSeconds)}s silent preview assembled from your script.`,
+      } satisfies VisualGenerateJobPayload,
+      progress: 100,
+      status: "completed" as const,
+    };
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Visual assemble failed.";
+    // On serverless hosts without ffmpeg, stills may already be saved — complete softly.
+    if (/ffmpeg|ENOENT|spawn/i.test(message)) {
+      const { data: saved } = await supabase
+        .from("visual_assets")
+        .select("id, url")
+        .eq("project_id", payload.projectId);
+      const withUrl = (saved || []).filter((row) => row.url).length;
+      if (withUrl > 0) {
+        return {
+          payload: {
+            ...payload,
+            phase: "assemble" as const,
+            message: `Saved ${withUrl} scene stills. Video assembly needs ffmpeg (use local/Node host for full MP4).`,
+          } satisfies VisualGenerateJobPayload,
+          progress: 100,
+          status: "completed" as const,
+        };
+      }
+    }
+    throw caught instanceof Error ? caught : new Error(message);
+  }
 }
 
 async function runGenerateStep(

@@ -39,4 +39,25 @@ npm run start
 
 **Note:** Paths containing apostrophes (e.g. `Youtuber's Bible`) break some Windows shells. Use `subst` locally or rename the folder for CI.
 
-Vercel serverless is a poor fit for Remotion/ffmpeg export. Prefer a persistent Node host (Railway, Render, Fly.io, or a VPS).
+## Vercel notes
+
+Vercel **serverless** has limits this studio hits:
+
+| Area | Behavior on Vercel |
+|------|--------------------|
+| Script | Works (jobs complete inside the POST) |
+| Visuals stills | Works when image APIs/Pollinations respond; soft-completes without ffmpeg |
+| Visuals MP4 | Needs `ffmpeg-static` in the function bundle; otherwise stills-only |
+| Voice | Edge TTS → Google Translate TTS (no Windows SAPI); finishes in POST |
+| Export / Remotion | Often too heavy — prefer a Node host |
+
+Set env vars in the Vercel project (Gemini, Cloudflare, LLM, etc.).
+
+**Demo store durability:** `/tmp` is not shared across instances. Add one of:
+
+- `BLOB_READ_WRITE_TOKEN` (Vercel Blob), or
+- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+
+Without those, mutating APIs still return completed results in the POST body (and the UI caches them in `sessionStorage`), but a later request on another instance may not see prior jobs/media.
+
+For a fully reliable pipeline (voice + ffmpeg export), deploy to a persistent Node host (Railway, Render, Fly.io, or a VPS) with `npm run build && npm run start`.

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { processVisualJobStep } from "@/lib/jobs/visual-jobs";
+import { attachVisualJobExtras, processVisualJobStep, visualJobResponse } from "@/lib/jobs/visual-jobs";
 import type { JobRecord } from "@/lib/types/project";
 import type { VisualMode } from "@/lib/types/visual";
 
@@ -35,12 +35,29 @@ async function enqueueAndProcessVisualJob(
 
   const processed = await processVisualJobStep(supabase, job as JobRecord, userId);
   if (processed.status === "failed") {
+    await finalizeDemoApi();
     return NextResponse.json(
       { error: processed.error || "Visual generation failed.", jobId: processed.id },
       { status: 502 }
     );
   }
-  return NextResponse.json({ jobId: processed.id, status: processed.status, progress: processed.progress });
+
+  const base = visualJobResponse(processed);
+  const extras = await attachVisualJobExtras(supabase, processed, { ...base });
+  const { data: assets } = await supabase
+    .from("visual_assets")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("scene_index", { ascending: true });
+
+  await finalizeDemoApi();
+  return NextResponse.json({
+    ...extras,
+    jobId: processed.id,
+    status: processed.status,
+    progress: processed.progress,
+    assets: assets ?? [],
+  });
 }
 
 export async function POST(request: Request, { params }: Params) {

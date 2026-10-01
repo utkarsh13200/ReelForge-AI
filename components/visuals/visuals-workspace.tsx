@@ -108,18 +108,44 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
     const data = await apiFetch<{ project: Project; assets: VisualAsset[] }>(
       `/api/projects/${projectId}/visuals`
     );
-    setProject(data.project);
-    setAssets(data.assets ?? []);
-    if (data.project.script?.trim()) {
-      setScript(data.project.script);
+    let projectRow = data.project;
+    let nextAssets = data.assets ?? [];
+    let videoUrl = data.project.visual_video_url ?? null;
+    let videoDuration = data.project.visual_video_duration_seconds
+      ? Number(data.project.visual_video_duration_seconds)
+      : null;
+
+    // Serverless demo store can lose assets across instances — restore from tab session.
+    const serverStills = nextAssets.filter((a) => a.url).length;
+    if (serverStills === 0 || !videoUrl) {
+      try {
+        const { loadDemoClientSnapshot } = await import("@/lib/demo/client-session");
+        const snap = loadDemoClientSnapshot(projectId);
+        if (snap) {
+          if (serverStills === 0 && snap.assets?.some((a) => a.url)) {
+            nextAssets = snap.assets;
+          }
+          if (!videoUrl && snap.project.visual_video_url) {
+            videoUrl = snap.project.visual_video_url;
+            videoDuration = snap.project.visual_video_duration_seconds
+              ? Number(snap.project.visual_video_duration_seconds)
+              : videoDuration;
+            projectRow = { ...projectRow, ...snap.project, visual_video_url: videoUrl };
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
-    setVisualVideoUrl(data.project.visual_video_url ?? null);
-    setVisualVideoDuration(
-      data.project.visual_video_duration_seconds
-        ? Number(data.project.visual_video_duration_seconds)
-        : null
-    );
-    return data.assets ?? [];
+
+    setProject(projectRow);
+    setAssets(nextAssets);
+    if (projectRow.script?.trim()) {
+      setScript(projectRow.script);
+    }
+    setVisualVideoUrl(videoUrl);
+    setVisualVideoDuration(videoDuration);
+    return nextAssets;
   }, [setProject]);
 
   useEffect(() => {
@@ -196,29 +222,79 @@ export function VisualsWorkspace({ initialProject }: { initialProject: Project |
     setJob(null);
     try {
       const active = await persistScript();
-      const data = await apiFetch<{ jobId: string; status?: string }>(
-        `/api/projects/${active.id}/visuals/generate`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: visualMode, fromScript: true, script }),
-        }
-      );
-      const latest =
-        data.status === "completed"
-          ? await pollJob(data.jobId)
+      const data = await apiFetch<{
+        jobId: string;
+        status?: string;
+        progress?: number;
+        message?: string;
+        error?: string | null;
+        visualVideoUrl?: string | null;
+        visualVideoDurationSeconds?: number | null;
+        assets?: VisualAsset[];
+      }>(`/api/projects/${active.id}/visuals/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: visualMode, fromScript: true, script }),
+      });
+
+      // On Vercel, POST often finishes the job; polling another instance loses it.
+      const latest: JobPollResponse =
+        data.status === "completed" || data.status === "failed"
+          ? {
+              id: data.jobId,
+              status: data.status,
+              progress: data.progress ?? (data.status === "completed" ? 100 : 0),
+              message: data.message || "",
+              error: data.error ?? null,
+              projectId: active.id,
+              visualVideoUrl: data.visualVideoUrl ?? null,
+              visualVideoDurationSeconds: data.visualVideoDurationSeconds ?? null,
+              assets: data.assets,
+            }
           : await waitForJob(data.jobId);
+
       setBusy(false);
       if (latest.status === "failed") {
         setNotice(latest.error || "Generation failed.");
         await loadVisuals(active.id);
         return;
       }
-      await loadVisuals(active.id);
+      if (data.assets?.length) {
+        setAssets(data.assets);
+      }
+      if (data.visualVideoUrl || latest.visualVideoUrl) {
+        setVisualVideoUrl(data.visualVideoUrl || latest.visualVideoUrl || null);
+      }
+      if (data.visualVideoDurationSeconds || latest.visualVideoDurationSeconds) {
+        setVisualVideoDuration(
+          Number(data.visualVideoDurationSeconds || latest.visualVideoDurationSeconds) || null
+        );
+      }
+      try {
+        const { saveDemoClientSnapshot } = await import("@/lib/demo/client-session");
+        saveDemoClientSnapshot({
+          project: {
+            ...active,
+            visual_video_url: data.visualVideoUrl || latest.visualVideoUrl || active.visual_video_url,
+            visual_video_duration_seconds:
+              data.visualVideoDurationSeconds ||
+              latest.visualVideoDurationSeconds ||
+              active.visual_video_duration_seconds,
+          },
+          assets: data.assets?.length ? data.assets : undefined,
+        });
+      } catch {
+        // optional client cache
+      }
+      const refreshed = await loadVisuals(active.id).catch(() => data.assets ?? []);
+      const hasStills =
+        (data.assets || []).some((a) => a.url) || (refreshed || []).some((a) => a.url);
       setNotice(
-        latest.visualVideoUrl
-          ? `Your silent AI video is ready (${formatVideoDuration(latest.visualVideoDurationSeconds ?? visualVideoDuration)}). Continue to Voice to add narration.`
-          : `${VISUAL_MODE_LABELS[visualMode]} scenes created — video assembly did not finish. Try again.`
+        latest.visualVideoUrl || data.visualVideoUrl
+          ? `Your silent AI video is ready (${formatVideoDuration(latest.visualVideoDurationSeconds ?? data.visualVideoDurationSeconds ?? visualVideoDuration)}). Continue to Voice to add narration.`
+          : hasStills
+            ? `${VISUAL_MODE_LABELS[visualMode]} scene stills ready. Full MP4 needs ffmpeg on a Node host.`
+            : `${VISUAL_MODE_LABELS[visualMode]} scenes created — video assembly did not finish. Try again.`
       );
     } catch (error) {
       setBusy(false);

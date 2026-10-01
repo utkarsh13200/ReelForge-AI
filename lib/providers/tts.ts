@@ -270,6 +270,10 @@ export async function synthesizeSpeech(
     const timeoutMs = Math.min(15_000, Math.max(8_000, 6_000 + clipped.length * 20));
     return withTimeout(synthesizeWithEdge(clipped, voice.edgeName, timeOffsetSeconds), timeoutMs);
   };
+  const fromGoogle = async () => {
+    const { synthesizeWithGoogleTts } = await import("@/lib/providers/google-tts");
+    return synthesizeWithGoogleTts(clipped, timeOffsetSeconds);
+  };
 
   const provider = ttsProvider();
   // On Windows, SAPI is the reliable default. Edge is optional / fallback.
@@ -288,14 +292,24 @@ export async function synthesizeSpeech(
     } catch (caught) {
       errors.push(`Edge TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
     }
+    try {
+      return await fromGoogle();
+    } catch (caught) {
+      errors.push(`Google TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
+    }
     throw new Error(errors.join(" ") || "Voice generation failed.");
   }
 
-  // TTS_PROVIDER=edge-tts: try Edge first, then Windows SAPI.
+  // Linux / Vercel: Edge first, then Google Translate TTS (SAPI is Windows-only).
   try {
     return await fromEdge();
   } catch (caught) {
     errors.push(`Edge TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
+  }
+  try {
+    return await fromGoogle();
+  } catch (caught) {
+    errors.push(`Google TTS: ${caught instanceof Error ? caught.message : String(caught)}`);
   }
   if (process.platform === "win32") {
     try {

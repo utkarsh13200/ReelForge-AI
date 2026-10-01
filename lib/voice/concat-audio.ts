@@ -43,6 +43,9 @@ export async function concatMp3Buffers(buffers: Buffer[]): Promise<Buffer> {
     ]);
 
     return readFile(outputPath);
+  } catch {
+    // Serverless hosts often lack ffmpeg — MPEG streams usually play when concatenated.
+    return Buffer.concat(buffers.map((part) => new Uint8Array(part)));
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }

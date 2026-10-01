@@ -152,12 +152,32 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
     setJob(null);
     try {
       const active = await ensureProject();
-      const data = await apiFetch<{ jobId: string }>(`/api/projects/${active.id}/script/topic`, {
+      const data = await apiFetch<{
+        jobId: string;
+        id?: string;
+        status?: string;
+        script?: string | null;
+        error?: string | null;
+        progress?: number;
+        message?: string;
+      }>(`/api/projects/${active.id}/script/topic`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic, tone, customTone: tone === "others" ? customTone : undefined, duration }),
       });
-      const first = await pollJob(data.jobId);
+      const jobId = data.jobId || data.id || "";
+      const first =
+        data.status === "completed" || data.status === "failed"
+          ? {
+              id: jobId,
+              status: data.status,
+              progress: data.progress ?? (data.status === "completed" ? 100 : 0),
+              message: data.message ?? "",
+              error: data.error ?? null,
+              script: data.script ?? null,
+              projectId: active.id,
+            }
+          : await pollJob(jobId);
       setJob(first);
       if (first.status === "failed") {
         setBusy(false);
@@ -187,7 +207,13 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
     setJob(null);
     try {
       const active = await ensureProject();
-      const data = await apiFetch<{ jobId: string }>(`/api/projects/${active.id}/script/youtube`, {
+      const data = await apiFetch<{
+        jobId: string;
+        status?: string;
+        progress?: number;
+        message?: string;
+        error?: string | null;
+      }>(`/api/projects/${active.id}/script/youtube`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -196,7 +222,18 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
           modifyInstructions: modifyTranscript ? modifyInstructions : undefined,
         }),
       });
-      const first = await pollJob(data.jobId);
+      const first =
+        data.status === "completed" || data.status === "failed"
+          ? {
+              id: data.jobId,
+              status: data.status,
+              progress: data.progress ?? (data.status === "completed" ? 100 : 0),
+              message: data.message || "",
+              error: data.error ?? null,
+              script: null,
+              projectId: active.id,
+            }
+          : await pollJob(data.jobId);
       setJob(first);
       if (first.status === "failed") {
         setBusy(false);
