@@ -7,7 +7,11 @@ import type { VisualAsset } from "@/lib/types/visual";
 import type { VoiceAsset } from "@/lib/types/voice";
 import type { DemoStore } from "@/lib/demo/store";
 import { demoDataRoot, isServerlessRuntime } from "@/lib/runtime/platform";
-import { saveRemoteDemoStore, shouldUseRemoteDemoStore } from "@/lib/demo/remote-store";
+import {
+  hasRemoteDemoStore,
+  saveRemoteDemoStore,
+  shouldUseRemoteDemoStore,
+} from "@/lib/demo/remote-store";
 
 export const DEMO_DATA_DIR = demoDataRoot();
 export const DEMO_STORE_FILE = join(DEMO_DATA_DIR, "store.json");
@@ -93,21 +97,29 @@ function writeLocalStore(state: DemoStore) {
 export function flushPersistDemoStore(state: DemoStore) {
   if (typeof window !== "undefined") return;
   try {
-    const payload = writeLocalStore(state);
-    if (shouldUseRemoteDemoStore()) {
+    const payload = (() => {
+      try {
+        return writeLocalStore(state);
+      } catch {
+        // /tmp or cwd may be unavailable — still push remote.
+        return serializeDemoStore(state);
+      }
+    })();
+
+    if (shouldUseRemoteDemoStore() || hasRemoteDemoStore()) {
       remotePersistChain = remotePersistChain
         .then(() => saveRemoteDemoStore(payload))
         .catch(() => undefined);
     }
   } catch {
-    // Best-effort persistence for local demo sessions.
+    // Best-effort persistence.
   }
 }
 
 export function schedulePersistDemoStore(state: DemoStore) {
   if (typeof window !== "undefined") return;
-  // Serverless requests end quickly — debounce would drop writes before flush.
-  if (isServerlessRuntime()) {
+  // Serverless / remote: write immediately so the response can await the flush.
+  if (isServerlessRuntime() || shouldUseRemoteDemoStore()) {
     flushPersistDemoStore(state);
     return;
   }

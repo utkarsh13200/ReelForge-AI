@@ -53,11 +53,12 @@ Vercel **serverless** has limits this studio hits:
 
 Set env vars in the Vercel project (Gemini, Cloudflare, LLM, etc.).
 
-**Demo store durability:** `/tmp` is not shared across instances. Add one of:
+**Demo store durability (required on Vercel):** `/tmp` is not shared across instances.
 
-- `BLOB_READ_WRITE_TOKEN` (Vercel Blob), or
-- `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+Connect a **Vercel Blob** store to the project (Storage → Blob). Vercel injects `BLOB_READ_WRITE_TOKEN` automatically. The app then persists projects, jobs, and media to Blob so every serverless instance sees the same state.
 
-Without those, mutating APIs still return completed results in the POST body (and the UI caches them in `sessionStorage`), but a later request on another instance may not see prior jobs/media.
+Optional alternative: `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`.
+
+Without a durable store, mutating APIs may still return completed results in the POST body, but a later request on another instance can miss prior jobs/media.
 
 For a fully reliable pipeline (voice + ffmpeg export), deploy to a persistent Node host (Railway, Render, Fly.io, or a VPS) with `npm run build && npm run start`.

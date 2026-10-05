@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import * as demo from "@/lib/demo/api";
 import { countWords } from "@/lib/script/utils";
 
@@ -27,7 +27,11 @@ export async function PATCH(request: Request, { params }: Params) {
   if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
   const body = (await request.json()) as { title?: string; script?: string };
-  if (auth.isDemo) return demo.demoPatchProject(params.id, body);
+  if (auth.isDemo) {
+    const response = demo.demoPatchProject(params.id, body);
+    await finalizeDemoApi();
+    return response;
+  }
 
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (typeof body.title === "string") updates.title = body.title.trim() || "Untitled project";

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import { buildJobResponse, processJobStep } from "@/lib/jobs/process-job";
 import { attachVisualJobExtras, isVisualJobBusy } from "@/lib/jobs/visual-jobs";
 import { continueVoiceJobInBackground, isVoiceJobBusy } from "@/lib/jobs/voice-jobs";
@@ -126,5 +126,6 @@ export async function GET(_request: Request, { params }: Params) {
     }
   }
 
+  await finalizeDemoApi();
   return NextResponse.json(response);
 }

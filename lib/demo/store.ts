@@ -9,6 +9,7 @@ import { countWords } from "@/lib/script/utils";
 import { DEMO_PROJECT_ID, DEMO_USER_ID } from "@/lib/demo/constants";
 import { createDemoProject, createDemoVisualAssets } from "@/lib/demo/seed";
 import {
+  flushPersistDemoStore,
   hydrateDemoStore,
   loadPersistedDemoStore,
   schedulePersistDemoStore,
@@ -91,6 +92,14 @@ export async function ensureDemoStoreReady() {
 export function mutateDemoStore(mutator: (state: DemoStore) => void) {
   mutator(store());
   persistSoon();
+}
+
+/** Mutate then await durable remote flush (use in API handlers on Vercel). */
+export async function mutateDemoStoreAsync(mutator: (state: DemoStore) => void) {
+  mutator(store());
+  flushPersistDemoStore(store());
+  const { awaitRemoteDemoPersist } = await import("@/lib/demo/persistence");
+  await awaitRemoteDemoPersist();
 }
 
 export function exportDemoStoreJson() {

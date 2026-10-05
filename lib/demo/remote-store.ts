@@ -1,7 +1,8 @@
-import { isServerlessRuntime } from "@/lib/runtime/platform";
+import { list, put } from "@vercel/blob";
 import type { SerializedDemoStore } from "@/lib/demo/persistence";
+import { isServerlessRuntime } from "@/lib/runtime/platform";
 
-const STORE_PATH = "reelforge-demo/store.json";
+const STORE_PATHNAME = "reelforge-demo/store.json";
 
 function blobToken() {
   return (process.env.BLOB_READ_WRITE_TOKEN || "").trim();
@@ -19,28 +20,28 @@ export function hasRemoteDemoStore() {
   return Boolean(blobToken() || (upstashUrl() && upstashToken()));
 }
 
-/** Prefer remote durable store on serverless so jobs/assets survive instance hops. */
+/**
+ * Use durable remote store whenever a backend is configured.
+ * On Vercel this is required so projects/jobs survive instance hops.
+ */
 export function shouldUseRemoteDemoStore() {
-  return isServerlessRuntime() && hasRemoteDemoStore();
+  if (!hasRemoteDemoStore()) return false;
+  return (
+    isServerlessRuntime() ||
+    process.env.FORCE_REMOTE_DEMO_STORE === "true" ||
+    process.env.VERCEL === "1"
+  );
 }
 
 async function loadFromBlob(): Promise<SerializedDemoStore | null> {
-  const token = blobToken();
-  if (!token) return null;
+  if (!blobToken()) return null;
   try {
-    const listRes = await fetch(
-      `https://blob.vercel-storage.com?prefix=${encodeURIComponent(STORE_PATH)}&limit=1`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "x-api-version": "7",
-        },
-        cache: "no-store",
-      }
-    );
-    if (!listRes.ok) return null;
-    const listed = (await listRes.json()) as { blobs?: Array<{ url: string }> };
-    const url = listed.blobs?.[0]?.url;
+    const listed = await list({
+      prefix: STORE_PATHNAME,
+      limit: 1,
+      token: blobToken(),
+    });
+    const url = listed.blobs[0]?.url;
     if (!url) return null;
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) return null;
@@ -51,21 +52,16 @@ async function loadFromBlob(): Promise<SerializedDemoStore | null> {
 }
 
 async function saveToBlob(data: SerializedDemoStore): Promise<boolean> {
-  const token = blobToken();
-  if (!token) return false;
+  if (!blobToken()) return false;
   try {
-    const body = JSON.stringify(data);
-    const res = await fetch(`https://blob.vercel-storage.com/${STORE_PATH}`, {
-      method: "PUT",
-      headers: {
-        Access: "public",
-        Authorization: `Bearer ${token}`,
-        "x-api-version": "7",
-        "Content-Type": "application/json",
-      },
-      body,
+    await put(STORE_PATHNAME, JSON.stringify(data), {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType: "application/json",
+      token: blobToken(),
     });
-    return res.ok;
+    return true;
   } catch {
     return false;
   }
@@ -133,23 +129,17 @@ export async function uploadRemoteMedia(
   bytes: Buffer,
   contentType: string
 ): Promise<string | null> {
-  const token = blobToken();
-  if (!token) return null;
+  if (!blobToken()) return null;
   const pathname = `reelforge-demo/media/${bucket}/${path}`;
   try {
-    const res = await fetch(`https://blob.vercel-storage.com/${pathname}`, {
-      method: "PUT",
-      headers: {
-        Access: "public",
-        Authorization: `Bearer ${token}`,
-        "x-api-version": "7",
-        "Content-Type": contentType,
-      },
-      body: new Uint8Array(bytes),
+    const result = await put(pathname, bytes, {
+      access: "public",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      contentType,
+      token: blobToken(),
     });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { url?: string };
-    return json.url ?? null;
+    return result.url;
   } catch {
     return null;
   }

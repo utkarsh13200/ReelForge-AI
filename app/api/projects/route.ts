@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { requireApiUser } from "@/lib/auth/require-api-user";
+import { finalizeDemoApi, requireApiUser } from "@/lib/auth/require-api-user";
 import * as demo from "@/lib/demo/api";
 
 export async function GET() {
@@ -28,7 +28,11 @@ export async function POST(request: Request) {
     source_type?: "topic" | "youtube_url";
   };
 
-  if (auth.isDemo) return demo.demoCreateProject(body);
+  if (auth.isDemo) {
+    const response = demo.demoCreateProject(body);
+    await finalizeDemoApi();
+    return response;
+  }
 
   const supabase = auth.supabase!;
   const { data, error } = await supabase
