@@ -45,7 +45,16 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
   const [script, setScript] = useState(initialProject?.script ?? "");
 
   useEffect(() => {
-    setScript(project?.script ?? "");
+    const incoming = project?.script?.trim() || "";
+    // On Vercel, a later GET can hit another instance without the new script.
+    // Never wipe a longer local draft/generated script with an empty/stale project row.
+    if (!incoming) return;
+    setScript((current) => {
+      if (!current.trim()) return incoming;
+      if (incoming === current.trim()) return current;
+      if (incoming.length >= current.trim().length) return incoming;
+      return current;
+    });
   }, [activeProjectId, project?.script]);
 
   const [busy, setBusy] = useState(false);
@@ -182,14 +191,35 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
       if (first.status === "failed") {
         setBusy(false);
         setNotice(first.error || "Generation failed.");
+        return;
       }
       if (first.status === "completed") {
+        // Prefer script from the POST/job body — project GET may hit another serverless instance.
+        const fromJob = first.script?.trim() || data.script?.trim() || "";
+        if (fromJob) setScript(fromJob);
         setBusy(false);
         setNotice("Script ready — continue to Visuals when you're happy with it.");
-        const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
-        setProject(projectData.project);
-        const savedScript = projectData.project.script?.trim() || first.script?.trim() || "";
-        if (savedScript) setScript(savedScript);
+        try {
+          const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
+          const savedScript =
+            projectData.project.script?.trim() || fromJob || "";
+          setProject({
+            ...projectData.project,
+            script: savedScript || projectData.project.script,
+            script_word_count: savedScript
+              ? countWords(savedScript)
+              : projectData.project.script_word_count,
+          });
+          if (savedScript) setScript(savedScript);
+        } catch {
+          if (fromJob) {
+            setProject({
+              ...active,
+              script: fromJob,
+              script_word_count: countWords(fromJob),
+            });
+          }
+        }
       }
     } catch (error) {
       setBusy(false);
@@ -249,13 +279,32 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
       if (first.status === "failed") {
         setBusy(false);
         setNotice(first.error || "Import failed.");
+        return;
       }
       if (first.status === "completed") {
+        const fromJob = first.script?.trim() || data.script?.trim() || "";
+        if (fromJob) setScript(fromJob);
         setBusy(false);
-        const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
-        setProject(projectData.project);
-        const savedScript = projectData.project.script?.trim() || first.script?.trim() || "";
-        if (savedScript) setScript(savedScript);
+        try {
+          const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
+          const savedScript = projectData.project.script?.trim() || fromJob || "";
+          setProject({
+            ...projectData.project,
+            script: savedScript || projectData.project.script,
+            script_word_count: savedScript
+              ? countWords(savedScript)
+              : projectData.project.script_word_count,
+          });
+          if (savedScript) setScript(savedScript);
+        } catch {
+          if (fromJob) {
+            setProject({
+              ...active,
+              script: fromJob,
+              script_word_count: countWords(fromJob),
+            });
+          }
+        }
         setNotice(modifyTranscript ? "Transcript imported and modified." : "Raw transcript imported.");
       }
     } catch (error) {
