@@ -43,7 +43,14 @@ async function loadFromBlob(): Promise<SerializedDemoStore | null> {
     });
     const url = listed.blobs[0]?.url;
     if (!url) return null;
-    const res = await fetch(url, { cache: "no-store" });
+    // Public blob URLs are CDN-cached — bust so overwrites are visible immediately.
+    const bust = url.includes("?")
+      ? `${url}&t=${Date.now()}`
+      : `${url}?t=${Date.now()}`;
+    const res = await fetch(bust, {
+      cache: "no-store",
+      headers: { "Cache-Control": "no-cache" },
+    });
     if (!res.ok) return null;
     return (await res.json()) as SerializedDemoStore;
   } catch {
