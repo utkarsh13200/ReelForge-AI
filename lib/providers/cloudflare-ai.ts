@@ -66,29 +66,33 @@ export async function fetchCloudflareAiImage(
         Authorization: `Bearer ${apiToken()}`,
         "Content-Type": "application/json",
       },
+      // FLUX.1 Schnell rejects unknown fields (e.g. `seed`) with HTTP 400.
       body: JSON.stringify({
-        prompt: clipped,
+        prompt: `${clipped}${seed ? ` (variation ${Math.abs(seed) % 10_000})` : ""}`,
         steps: Number(process.env.CLOUDFLARE_IMAGE_STEPS || 4),
-        seed: Math.abs(seed) % 2_147_483_647,
       }),
       cache: "no-store",
       signal: AbortSignal.timeout(timeoutMs),
     });
 
-    const text = await response.text();
-    if (shouldParkProvider(response.status, text)) {
-      parkProvider("cloudflare-ai");
+    // Some endpoints return raw JPEG/PNG bytes.
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok) {
+      const text = await response.text();
+      // Only inspect short error bodies — never scan base64 image payloads
+      // (random JPEG base64 can contain substrings like "forbidden").
+      if (shouldParkProvider(response.status, text.slice(0, 800))) {
+        parkProvider("cloudflare-ai");
+      }
       return null;
     }
-    if (!response.ok) return null;
 
-    // Some endpoints return raw JPEG bytes.
-    const contentType = response.headers.get("content-type") || "";
     if (contentType.startsWith("image/")) {
       const bytes = Buffer.from(await response.arrayBuffer());
       return isRasterImage(bytes, contentType) ? bytes : null;
     }
 
+    const text = await response.text();
     try {
       return decodeImagePayload(JSON.parse(text) as unknown);
     } catch {

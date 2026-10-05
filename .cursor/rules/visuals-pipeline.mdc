@@ -35,7 +35,7 @@ Module 02 must keep producing a complete silent script-length video quickly, wit
 
 ## Optional providers
 
-- Image stills: Gemini (only when the key has image quota) → Hugging Face → Pollinations → Wikimedia. Skip Replicate on the hot path (HTTP 402). Skip a provider that is unset or errors; never fail the job if a later provider works. Free-tier Gemini keys often report limit 0 — skip immediately.
+- Image stills: Cloudflare Workers AI (parallel) → Gemini (all keys) → Hugging Face → Pollinations (sequential) → Wikimedia. Skip Replicate on the hot path (HTTP 402). Skip a provider that is unset or errors; never fail the job if a later provider works. Free-tier Gemini keys often report limit 0 — skip immediately.
 - Video clips: Fal.ai Hunyuan → Replicate → Hugging Face → ComfyUI → JSON2Video → Remotion → ffmpeg Ken Burns. Video mode must not hard-fail when `FAL_KEY` is missing.
 - ComfyUI: only when `COMFYUI_BASE_URL` is set.
 - Image and Motion must keep working without Replicate, Hugging Face, JSON2Video, or Fal keys.

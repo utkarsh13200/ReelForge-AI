@@ -1,15 +1,15 @@
 import { countWords } from "@/lib/script/utils";
 import type { VisualMode } from "@/lib/types/visual";
 
-/** Image/Motion production: exactly 5 script-matched stills in a 1-minute silent preview. */
-export const PRODUCTION_SCENE_COUNT = 5;
-export const PRODUCTION_DURATION_SECONDS = 60;
-
-/** Legacy caps for video mode and other callers. */
+/** Scene caps for Image, Motion, and Video modes. */
 export const FAST_MAX_SCENES = 8;
 export const FAST_MIN_SCENES = 7;
 
-/** Target seconds per scene — video mode only (image/motion use fixed 5 × 12s). */
+/** @deprecated Use computeScenePlan(); kept for callers expecting a default floor. */
+export const PRODUCTION_SCENE_COUNT = FAST_MIN_SCENES;
+export const PRODUCTION_DURATION_SECONDS = 60;
+
+/** Target seconds per scene when deriving scene count from script length. */
 export const SECONDS_PER_SCENE: Record<VisualMode, number> = {
   image: 12,
   motion: 12,
@@ -29,21 +29,17 @@ export type ScenePlan = {
 };
 
 /** Scene count follows the script; video length still matches narration. */
-export function computeScenePlan(script: string, mode: VisualMode = "image"): ScenePlan {
-  if (mode === "image" || mode === "motion") {
-    return {
-      sceneCount: PRODUCTION_SCENE_COUNT,
-      totalDurationSeconds: PRODUCTION_DURATION_SECONDS,
-      secondsPerScene: PRODUCTION_DURATION_SECONDS / PRODUCTION_SCENE_COUNT,
-    };
-  }
-
+function scenePlanFromScript(script: string, mode: VisualMode): ScenePlan {
   const totalDurationSeconds = estimateScriptDurationSeconds(script);
   const targetPerScene = SECONDS_PER_SCENE[mode];
   const ideal = Math.round(totalDurationSeconds / targetPerScene);
   const sceneCount = Math.max(FAST_MIN_SCENES, Math.min(FAST_MAX_SCENES, ideal || FAST_MIN_SCENES));
   const secondsPerScene = totalDurationSeconds / sceneCount;
   return { sceneCount, totalDurationSeconds, secondsPerScene };
+}
+
+export function computeScenePlan(script: string, mode: VisualMode = "image"): ScenePlan {
+  return scenePlanFromScript(script, mode);
 }
 
 export function computeSceneCount(script: string, mode: VisualMode = "image"): number {

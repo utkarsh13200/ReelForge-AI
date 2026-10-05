@@ -209,10 +209,12 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
       const active = await ensureProject();
       const data = await apiFetch<{
         jobId: string;
+        id?: string;
         status?: string;
         progress?: number;
         message?: string;
         error?: string | null;
+        script?: string | null;
       }>(`/api/projects/${active.id}/script/youtube`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -222,25 +224,38 @@ export function ScriptWorkspace({ initialProject }: { initialProject: Project | 
           modifyInstructions: modifyTranscript ? modifyInstructions : undefined,
         }),
       });
+      const jobId = data.jobId || data.id || "";
       const first =
         data.status === "completed" || data.status === "failed"
           ? {
-              id: data.jobId,
+              id: jobId,
               status: data.status,
               progress: data.progress ?? (data.status === "completed" ? 100 : 0),
-              message: data.message || "",
+              message: data.message ?? "",
               error: data.error ?? null,
-              script: null,
+              script: data.script ?? null,
               projectId: active.id,
             }
-          : await pollJob(data.jobId);
+          : jobId
+            ? await pollJob(jobId)
+            : null;
+      if (!first) {
+        setBusy(false);
+        setNotice("Import started but no job id was returned.");
+        return;
+      }
       setJob(first);
+      if (first.script) setScript(first.script);
       if (first.status === "failed") {
         setBusy(false);
         setNotice(first.error || "Import failed.");
       }
       if (first.status === "completed") {
         setBusy(false);
+        const projectData = await apiFetch<{ project: Project }>(`/api/projects/${active.id}`);
+        setProject(projectData.project);
+        const savedScript = projectData.project.script?.trim() || first.script?.trim() || "";
+        if (savedScript) setScript(savedScript);
         setNotice(modifyTranscript ? "Transcript imported and modified." : "Raw transcript imported.");
       }
     } catch (error) {
