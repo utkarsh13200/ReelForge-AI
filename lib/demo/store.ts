@@ -35,29 +35,43 @@ declare global {
   var __reelforgeDemoRemoteReady: Promise<void> | undefined;
 }
 
+function emptyStore(): DemoStore {
+  return {
+    projects: new Map(),
+    visualAssets: new Map(),
+    voiceAssets: new Map(),
+    thumbnails: new Map(),
+    jobs: new Map(),
+    exportJobs: new Map(),
+  };
+}
+
+function seedDemoProject(state: DemoStore) {
+  const project = createDemoProject();
+  state.projects.set(project.id, project);
+  state.visualAssets.set(project.id, createDemoVisualAssets(project.id));
+  state.voiceAssets.set(project.id, null);
+  state.thumbnails.set(project.id, []);
+}
+
 function store(): DemoStore {
   if (!globalThis.__reelforgeDemoStore) {
-    globalThis.__reelforgeDemoStore = {
-      projects: new Map(),
-      visualAssets: new Map(),
-      voiceAssets: new Map(),
-      thumbnails: new Map(),
-      jobs: new Map(),
-      exportJobs: new Map(),
-    };
+    globalThis.__reelforgeDemoStore = emptyStore();
   }
 
   if (!globalThis.__reelforgeDemoHydrated) {
+    // On serverless with Blob/Upstash, wait for ensureDemoStoreReady() so we
+    // never seed+persist over a newer remote store.
+    if (shouldUseRemoteDemoStore()) {
+      return globalThis.__reelforgeDemoStore;
+    }
+
     globalThis.__reelforgeDemoHydrated = true;
     const persisted = loadPersistedDemoStore();
     if (persisted?.projects?.length) {
       hydrateDemoStore(globalThis.__reelforgeDemoStore, persisted);
     } else {
-      const project = createDemoProject();
-      globalThis.__reelforgeDemoStore.projects.set(project.id, project);
-      globalThis.__reelforgeDemoStore.visualAssets.set(project.id, createDemoVisualAssets(project.id));
-      globalThis.__reelforgeDemoStore.voiceAssets.set(project.id, null);
-      globalThis.__reelforgeDemoStore.thumbnails.set(project.id, []);
+      seedDemoProject(globalThis.__reelforgeDemoStore);
       schedulePersistDemoStore(globalThis.__reelforgeDemoStore);
     }
   } else if (!globalThis.__reelforgeDemoStore.exportJobs) {
@@ -77,16 +91,36 @@ export function getDemoStoreSnapshot(): DemoStore {
 
 /** Pull durable demo state from Blob/Upstash before handling an API request. */
 export async function ensureDemoStoreReady() {
-  store();
-  if (!shouldUseRemoteDemoStore()) return;
-  try {
-    const remote = await loadRemoteDemoStore();
-    if (remote?.projects?.length) {
-      hydrateDemoStore(store(), remote);
-    }
-  } catch {
-    // Keep local/in-memory seed if remote is unavailable.
+  if (!globalThis.__reelforgeDemoStore) {
+    globalThis.__reelforgeDemoStore = emptyStore();
   }
+
+  if (shouldUseRemoteDemoStore()) {
+    try {
+      const remote = await loadRemoteDemoStore();
+      if (remote?.projects?.length) {
+        hydrateDemoStore(globalThis.__reelforgeDemoStore, remote);
+        globalThis.__reelforgeDemoHydrated = true;
+        return;
+      }
+    } catch {
+      // Fall through to local seed.
+    }
+
+    if (!globalThis.__reelforgeDemoHydrated) {
+      globalThis.__reelforgeDemoHydrated = true;
+      if (!globalThis.__reelforgeDemoStore.projects.size) {
+        seedDemoProject(globalThis.__reelforgeDemoStore);
+        // Persist seed once so the next instance sees a shared baseline.
+        flushPersistDemoStore(globalThis.__reelforgeDemoStore);
+        const { awaitRemoteDemoPersist } = await import("@/lib/demo/persistence");
+        await awaitRemoteDemoPersist();
+      }
+    }
+    return;
+  }
+
+  store();
 }
 
 export function mutateDemoStore(mutator: (state: DemoStore) => void) {
